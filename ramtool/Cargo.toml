@@ -8,8 +8,8 @@ description = "Unpack and repack Android boot/init_boot ramdisk images"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
-goblin = { version = "0.8", default-features = false, features = ["std", "elf32", "elf64", "endian_fd"] }
-lz4_flex = { version = "0.11", default-features = false, features = ["std", "frame"] }
+goblin = { version = "0.10", default-features = false, features = ["std", "elf32", "elf64", "endian_fd"] }
+lz4_flex = { version = "0.14", default-features = false, features = ["std", "frame"] }
 
 [profile.release]
 strip = true
