@@ -1,0 +1,6 @@
+[target.aarch64-linux-android]
+rustflags = [
+    "-C", "link-arg=-Wl,--gc-sections",
+    "-C", "link-arg=-Wl,--icf=all",
+    "-C", "link-arg=-Wl,--build-id=none",
+]

@@ -1,0 +1,29 @@
+<?xml version='1.0' encoding='UTF-8'?>
+
+<manifest>
+  <remote name="aosp" fetch="https://android.googlesource.com/" review="https://android.googlesource.com/" />
+
+  <default revision="master-kernel-build-2021" remote="aosp" sync-j="4" />
+
+  <superproject name="kernel/superproject" remote="aosp" />
+
+  <project path="build" name="kernel/build" revision="4346db81411b04ab61bb28266a8701bf9510f71a" />
+
+  <project path="common" name="kernel/common" revision="18f5581af79db34976c9f86764c94cee9c2c4bcc" />
+
+  <project path="hikey-modules" name="kernel/hikey-modules" revision="33d4b7f884500689a297df156b1c0a29e1c525da" />
+
+  <project path="kernel/tests" name="kernel/tests" revision="c3bc6d71b3525ce39caccf096053e2acb31d5d0c" />
+
+  <project path="kernel/configs" name="kernel/configs" revision="cf587f7bcddf2758180ffee322ba2b7a0bb85f36" />
+
+  <project path="common-modules/virtual-device" name="kernel/common-modules/virtual-device" revision="13efc33141d0dafbc63922ed0c9cb77168c50085" />
+
+  <project path="prebuilts-master/clang/host/linux-x86" name="platform/prebuilts/clang/host/linux-x86" clone-depth="1" revision="bceb7274dda5bb587a5473058bd9f52e678dde98" />
+
+  <project path="prebuilts/build-tools" name="platform/prebuilts/build-tools" clone-depth="1" revision="b7b30f478c71a065a408e1c452683297a4535b0b" />
+
+  <project path="prebuilts/kernel-build-tools" name="kernel/prebuilts/build-tools" clone-depth="1" revision="7fd431b702c3e662254e7bb745de5e69fbc0dbf5" />
+
+  <project path="tools/mkbootimg" name="platform/system/tools/mkbootimg" revision="d0d261f3b0f57105f570a9878e748d817a3c5e60" />
+</manifest>

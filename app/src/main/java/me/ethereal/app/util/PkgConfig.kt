@@ -1,0 +1,102 @@
+package me.ethereal.app.util
+
+import android.os.Parcelable
+import android.util.Log
+import androidx.annotation.Keep
+import androidx.compose.runtime.Immutable
+import kotlinx.parcelize.Parcelize
+import me.ethereal.app.EtherealApplication
+import me.ethereal.app.Natives
+import java.io.File
+import java.io.FileWriter
+
+object PkgConfig {
+    private const val TAG = "PkgConfig"
+
+    private const val CSV_HEADER = "pkg,exclude,allow,uid,to_uid,sctx"
+
+    @Immutable
+    @Parcelize
+    @Keep
+    data class Config(
+        var pkg: String = "", var exclude: Int = 0, var allow: Int = 0, var profile: Natives.Profile
+    ) : Parcelable {
+        companion object {
+            fun fromLine(line: String): Config? {
+                val sp = line.split(',', limit = 6)
+                if (sp.size < 6) return null
+                val pkg = sp[0].trim()
+                val exclude = sp[1].trim().toIntOrNull()
+                val allow = sp[2].trim().toIntOrNull()
+                val uid = sp[3].trim().toIntOrNull()
+                val toUid = sp[4].trim().toIntOrNull()
+                val scontext = sp[5].trim()
+                if (pkg.isEmpty() || exclude == null || allow == null ||
+                    uid == null || toUid == null || scontext.isEmpty()
+                ) return null
+                return Config(pkg, exclude, allow, Natives.Profile(uid, toUid, scontext))
+            }
+        }
+
+        fun isDefault(): Boolean {
+            return allow == 0 && exclude == 0
+        }
+
+        fun toLine(): String {
+            return "${pkg},${exclude},${allow},${profile.uid},${profile.toUid},${profile.scontext}"
+        }
+    }
+
+    fun readConfigs(): HashMap<Int, Config> {
+        val configs = HashMap<Int, Config>()
+        val file = File(EtherealApplication.PACKAGE_CONFIG_FILE)
+        if (file.exists()) {
+            file.readLines().filter { it.isNotBlank() }.forEach {
+                Log.d(TAG, it)
+                val p = Config.fromLine(it)
+                if (p == null) {
+                    Log.w(TAG, "Skip malformed package_config line: $it")
+                } else if (!p.isDefault()) {
+                    configs[p.profile.uid] = p
+                }
+            }
+        }
+        return configs
+    }
+
+    private fun writeConfigs(configs: HashMap<Int, Config>) {
+        val file = File(EtherealApplication.PACKAGE_CONFIG_FILE)
+        file.parentFile?.mkdirs()
+        val writer = FileWriter(file, false)
+        writer.write(CSV_HEADER + '\n')
+        configs.values.forEach {
+            if (!it.isDefault()) {
+                writer.write(it.toLine() + '\n')
+            }
+        }
+        writer.flush()
+        writer.close()
+    }
+
+    fun changeConfig(config: Config) {
+        synchronized(PkgConfig.javaClass) {
+            if (android.os.Process.myUid() != 0 && !Natives.su()) {
+                Log.e(TAG, "changeConfig: SuperCall did not make uid 0")
+                return
+            }
+            val configs = readConfigs()
+            val uid = config.profile.uid
+            // Root App should not be excluded
+            if (config.allow == 1) {
+                config.exclude = 0
+            }
+            if (config.allow == 0 && configs[uid] != null && config.exclude != 0) {
+                configs.remove(uid)
+            } else {
+                Log.d(TAG, "change config: $config")
+                configs[uid] = config
+            }
+            writeConfigs(configs)
+        }
+    }
+}

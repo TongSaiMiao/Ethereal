@@ -1,0 +1,31 @@
+<?xml version='1.0' encoding='UTF-8'?>
+
+<manifest>
+  <remote name="aosp" fetch="https://android.googlesource.com/" review="https://android.googlesource.com/" />
+
+  <default upstream="master-kernel-build-2021" dest-branch="master-kernel-build-2021" remote="aosp" sync-j="4" />
+
+  <superproject name="kernel/superproject" />
+
+  <project path="build" name="kernel/build" revision="4346db81411b04ab61bb28266a8701bf9510f71a" />
+
+  <project path="hikey-modules" name="kernel/hikey-modules" revision="29186c26014764e1ed94548b285b3f020beed758" upstream="android12-5.10" dest-branch="android12-5.10" />
+
+  <project path="common" name="kernel/common" revision="5b153f189546d4dc818931f58fd5b5d16f445d41" upstream="android12-5.10-m2107" dest-branch="android12-5.10-m2107" />
+
+  <project path="kernel/tests" name="kernel/tests" revision="c3bc6d71b3525ce39caccf096053e2acb31d5d0c" />
+
+  <project path="kernel/configs" name="kernel/configs" revision="cf587f7bcddf2758180ffee322ba2b7a0bb85f36" />
+
+  <project path="common-modules/virtual-device" name="kernel/common-modules/virtual-device" revision="6a14bda94ee61654deb767e1232079acb085a8b9" upstream="android12-5.10" dest-branch="android12-5.10" />
+
+  <project path="prebuilts-master/clang/host/linux-x86" name="platform/prebuilts/clang/host/linux-x86" clone-depth="1" revision="bceb7274dda5bb587a5473058bd9f52e678dde98" />
+
+  <project path="prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8" name="platform/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8" clone-depth="1" revision="01ea25b951d8f0bfc14bfb6f671a8cf5893bd8bc" />
+
+  <project path="prebuilts/build-tools" name="platform/prebuilts/build-tools" clone-depth="1" revision="b7b30f478c71a065a408e1c452683297a4535b0b" />
+
+  <project path="prebuilts/kernel-build-tools" name="kernel/prebuilts/build-tools" clone-depth="1" revision="7fd431b702c3e662254e7bb745de5e69fbc0dbf5" />
+
+  <project path="tools/mkbootimg" name="platform/system/tools/mkbootimg" revision="d0d261f3b0f57105f570a9878e748d817a3c5e60" />
+</manifest>

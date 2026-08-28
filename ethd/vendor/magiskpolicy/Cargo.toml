@@ -1,0 +1,19 @@
+[package]
+name = "magiskpolicy"
+version = "0.1.0"
+edition = "2024"
+description = "Standalone build of Magisk's SELinux policy engine"
+repository = "https://github.com/topjohnwu/Magisk"
+license = "GPL-3.0-only"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+log = "0.4"
+
+[build-dependencies]
+cc = "1"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(magiskpolicy_stub)'] }

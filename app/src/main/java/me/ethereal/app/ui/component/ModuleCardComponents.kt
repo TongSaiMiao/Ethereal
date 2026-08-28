@@ -1,0 +1,70 @@
+package me.ethereal.app.ui.component
+
+import androidx.annotation.DrawableRes
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import me.ethereal.app.R
+
+@Composable
+fun ModuleUpdateButton(
+    onClick: () -> Unit
+) = FilledTonalButton(
+    onClick = onClick, enabled = true, contentPadding = PaddingValues(12.dp)
+) {
+    Icon(
+        modifier = Modifier.size(20.dp),
+        painter = painterResource(id = R.drawable.device_mobile_down),
+        contentDescription = stringResource(id = R.string.module_update)
+    )
+}
+
+@Composable
+fun ModuleRemoveButton(
+    enabled: Boolean, onClick: () -> Unit
+) = FilledTonalButton(
+    onClick = onClick, enabled = enabled, contentPadding = PaddingValues(12.dp)
+) {
+    Icon(
+        modifier = Modifier.size(20.dp),
+        painter = painterResource(id = R.drawable.trash),
+        contentDescription = stringResource(id = R.string.module_remove)
+    )
+}
+
+@Composable
+fun ModuleUndoRemoveButton(
+    enabled: Boolean, onClick: () -> Unit
+) = FilledTonalButton(
+    onClick = onClick, enabled = enabled, contentPadding = PaddingValues(12.dp)
+) {
+    Icon(
+        modifier = Modifier.size(20.dp),
+        painter = painterResource(id = R.drawable.undo),
+        contentDescription = stringResource(id = R.string.module_undo)
+    )
+}
+
+@Composable
+fun ModuleStateIndicator(
+    @DrawableRes icon: Int, color: Color = MaterialTheme.colorScheme.outline
+) {
+    Image(
+        modifier = Modifier.requiredSize(150.dp),
+        painter = painterResource(id = icon),
+        contentDescription = null,
+        alpha = 0.1f,
+        colorFilter = ColorFilter.tint(color)
+    )
+}

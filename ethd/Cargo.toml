@@ -1,0 +1,60 @@
+[package]
+name = "ethd"
+version = "0.1.0"
+edition = "2024"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+mlua = { version = "0.12.0", features = ["lua54","vendored"] }
+anyhow = "1.0.104"
+csv = "1.4.0"
+clap = { version = "4.6.6", features = ["derive"] }
+const_format = "0.2.36"
+# "time" is not enabled: ethd never reads or writes zip timestamps.
+# "deflate-flate2-zlib-rs" instead of "deflate": drops the write-only zopfli
+# encoder but keeps the zlib-rs backend, which provides the inflate path
+# (flate2 without any backend fails to compile).
+zip = { version = "8.6.0",features = [
+    "deflate-flate2-zlib-rs",
+    "deflate64",
+    "lzma",
+    "xz",
+], default-features = false }
+# The crates.io 2.0.0 release is the original MIT-licensed upstream.  Its
+# PropertiesIter API is identical to the former downstream git fork.
+java-properties = "=2.0.0"
+log = "0.4.33"
+env_logger = "0.11.11"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+encoding_rs = "0.8.35"
+libc = "0.2.189"
+extattr = "1.0.0"
+jwalk = "0.9.0"
+is_executable = "1.0.6"
+which = "8.0.5"
+getopts = "0.2.24"
+notify = "8.2.0"
+signal-hook = "0.4.4"
+regex-lite = "0.1.9"
+
+[target.'cfg(any(target_os = "android", target_os = "linux"))'.dependencies]
+rustix = { version = "1.1.4", features = ["all-apis"] }
+# some android specific dependencies which compiles under unix are also listed here for convenience of coding
+android-properties = { version = "0.2.2", features = ["bionic-deprecated"] }
+prop-rs-android = { git = "https://github.com/Kernel-SU/ksu_props", rev = "6f5723105d8d4cacad31d83d343defbf032c7b33"}
+# Standalone build of Magisk's policy engine and its pinned SELinuxProject
+# libsepol. Exact upstream revisions and local adapters are documented there.
+policy = { package = "magiskpolicy", path = "vendor/magiskpolicy" }
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger = { version = "0.15.1", default-features = false }
+
+[profile.release]
+strip = true
+overflow-checks = false
+rpath = false
+opt-level = 3
+codegen-units = 1
+panic = "abort"
+lto = "fat"

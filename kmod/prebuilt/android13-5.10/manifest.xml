@@ -1,0 +1,75 @@
+<?xml version='1.0' encoding='UTF-8'?>
+
+<manifest>
+  <remote name="aosp" fetch="https://android.googlesource.com/" review="https://android.googlesource.com/" />
+
+  <default upstream="master" dest-branch="master" remote="aosp" sync-j="4" />
+
+  <superproject name="kernel/superproject" remote="aosp" revision="common-android13-5.10-2022-06" />
+
+  <project path="build/kernel" name="kernel/build" revision="0aea4a7c674f647f33bf53ec82adf642a3974c97">
+    <linkfile dest="tools/bazel" src="kleaf/bazel.sh" />
+
+    <linkfile dest="WORKSPACE" src="kleaf/bazel.WORKSPACE" />
+
+    <linkfile dest="build/build.sh" src="build.sh" />
+
+    <linkfile dest="build/build_abi.sh" src="build_abi.sh" />
+
+    <linkfile dest="build/build_test.sh" src="build_test.sh" />
+
+    <linkfile dest="build/build_utils.sh" src="build_utils.sh" />
+
+    <linkfile dest="build/config.sh" src="config.sh" />
+
+    <linkfile dest="build/envsetup.sh" src="envsetup.sh" />
+
+    <linkfile dest="build/_setup_env.sh" src="_setup_env.sh" />
+
+    <linkfile dest="build/multi-switcher.sh" src="multi-switcher.sh" />
+
+    <linkfile dest="build/abi" src="abi" />
+
+    <linkfile dest="build/static_analysis" src="static_analysis" />
+</project>
+
+  <project path="hikey-modules" name="kernel/hikey-modules" revision="8864304543d16b95c9c268e4e156601ef9b499e7" upstream="android13-5.10" dest-branch="android13-5.10" />
+
+  <project path="common" name="kernel/common" revision="f8ca44396e51ac8b3fcf639866882af21d4c5a10" upstream="android13-5.10" dest-branch="android13-5.10">
+    <linkfile dest=".source_date_epoch_dir" src="." />
+</project>
+
+  <project path="kernel/common-patches" name="kernel/common-patches" revision="c0f06a2c8d7cbcdf2459684c6ac0151dfbf166f2">
+    <linkfile dest="common/patches" src="android-mainline" />
+</project>
+
+  <project path="kernel/tests" name="kernel/tests" revision="623d1bc45fa8151257a94fbd79adcd92947d7e6d" />
+
+  <project path="kernel/configs" name="kernel/configs" revision="659aee1b688f245f4dafe4afe7904ed9cd91fbb0" upstream="master" dest-branch="master" />
+
+  <project path="common-modules/virtual-device" name="kernel/common-modules/virtual-device" revision="dfb3af2c2c2b2270225810b735fa06a0106cf33c" upstream="android13-5.10" dest-branch="android13-5.10" />
+
+  <project path="prebuilts/clang/host/linux-x86" name="platform/prebuilts/clang/host/linux-x86" clone-depth="1" revision="ff91435009921b4252c008869503656bec2b8a9f" />
+
+  <project path="prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8" name="platform/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8" clone-depth="1" revision="e49b4b3477381d23fd9172221f5c8d9199d30fe6" />
+
+  <project path="prebuilts/boot-artifacts" name="platform/prebuilts/boot-artifacts" revision="45d30d07ad284018481ebb419b5d01b5de72ed02" />
+
+  <project path="prebuilts/build-tools" name="platform/prebuilts/build-tools" clone-depth="1" revision="dea48703cab6b10f79595dea597c044f4e666e49" />
+
+  <project path="prebuilts/kernel-build-tools" name="kernel/prebuilts/build-tools" clone-depth="1" revision="7ccb53752630292b75c62f7a760c9266f78ddd98" />
+
+  <project path="tools/mkbootimg" name="platform/system/tools/mkbootimg" revision="bafafbc994fa555294f711c346787b10cb12fc19" />
+
+  <project path="prebuilts/bazel/linux-x86_64" name="platform/prebuilts/bazel/linux-x86_64" clone-depth="1" revision="c40e15abd83ea5923b68096dcc3cef23edb9ea9b" />
+
+  <project path="prebuilts/jdk/jdk11" name="platform/prebuilts/jdk/jdk11" clone-depth="1" revision="bb0b310a724b77c6a76d8d480c0aac8b112fd400" />
+
+  <project path="prebuilts/ndk-r23" name="toolchain/prebuilts/ndk/r23" clone-depth="1" revision="93532f3052c14fbb337ff57d5732128dc7481ee6" />
+
+  <project path="external/bazel-skylib" name="platform/external/bazel-skylib" revision="12b9b0ebc47c7fc5464128ee9c1760878a6a853d" />
+
+  <project path="build/bazel_common_rules" name="platform/build/bazel_common_rules" revision="4b96d85dac392052947e036ba4ff70ec9cd635ad" />
+
+  <project path="external/stardoc" name="platform/external/stardoc" revision="b6ef2c6b6e39087f7396aaeb13c83464dfce4a19" />
+</manifest>

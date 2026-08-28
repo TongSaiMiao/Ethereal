@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="su_pkg_excluded_setting_summary">\t</string>
+    <string name="about_app_version">%1$s</string>
+    <string name="about_app_desc">…\t\t…“”” </string>
+    <string name="settings_sucompat">توافق su القديم</string>
+    <string name="settings_sucompat_summary">فعّل توافق su القديم (عندما لا يعمل su)</string>
+    <string name="settings_selinux_hide">إخفاء تعديل SELinux (اختباري)</string>
+    <string name="settings_selinux_hide_summary">إخفاء تعديلات SELinux لمنع اكتشافها من قبل عمليات المستخدم (قد تكون هذه الميزة غير مستقرة). يمكن للوضع الآمن تعطيل هذه الميزة.</string>
+    <string name="settings_selinux_hide_warning_title">تحذير</string>
+    <string name="settings_selinux_hide_warning_below_5_10">تم اختبار هذه الميزة على نواة 5.10 وما فوق فقط وقد تكون غير مستقرة على إصدارات النواة الأقل.</string>
+    <string name="settings_selinux_hide_warning_non_gki">تحمل النوى غير GKI مخاطر أكبر وقد تؤدي إلى فشل الإقلاع. تأكد من عمل نسخة احتياطية لبياناتك.</string>
+    <string name="settings_jailbreak_mode">وضع كسر الحماية</string>
+    <string name="settings_jailbreak_mode_summary">قم بتحميل وحدة Ethereal على نواة أصلية. لا يُسمح بالتثبيت في هذا الوضع.</string>
+    <string name="settings_jailbreak_soft_reboot">إعادة تشغيل ناعمة</string>
+    <string name="settings_jailbreak_soft_reboot_message">تم تحميل الوحدة. هل تريد إعادة تشغيل الإطار الآن؟</string>
+    <string name="settings_jailbreak_loaded">تم تحميل وحدة كسر الحماية</string>
+    <string name="settings_jailbreak_failed">فشل تحميل وحدة كسر الحماية</string>
+    <string name="jailbreak_no_patch">لا يُسمح بالتثبيت في وضع كسر الحماية.</string>
+    <string name="jailbreak">كسر الحماية</string>
+    <string name="jailbreak_triggered">تم تفعيل كسر الحماية. انتظر الحصول على صلاحيات الجذر ثم قم بإعادة تشغيل ناعمة.</string>
+    <string name="reboot_soft">إعادة تشغيل ناعمة</string>
+</resources>

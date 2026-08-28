@@ -1,0 +1,20 @@
+The patching of Android kernel and Android system.
+<ul>
+<li>A kernel-based root solution for Android devices.</li>
+<li>Ethereal modules: Support for modules similar to Magisk.</li>
+<li>The Ethereal UI and module source code have been derived and modified from KernelSU.</li>
+</ul>
+<ul>
+<li>Only supports the ARM64 architecture.</li>
+<li>Only supports Android kernel versions 3.18 - 6.12</li>
+</ul>
+Support for Samsung devices with security protection: Planned
+Kernel configs:
+<ul>
+<li>
+<code>CONFIG_KALLSYMS=y</code> and <code>CONFIG_KALLSYMS_ALL=y</code>
+</li>
+<li>
+<code>CONFIG_KALLSYMS=y</code> and <code>CONFIG_KALLSYMS_ALL=n</code>: Initial support
+</li>
+</ul>
