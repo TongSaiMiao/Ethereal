@@ -184,11 +184,22 @@ class ManagerStartupContractTest {
         val install = source("src/main/java/me/ethereal/app/ui/screen/BootInstall.kt")
         val options = install
             .substringAfter("val radioOptions = remember")
-            .substringBefore("var selectedOption")
+            .substringBefore("val context = LocalContext.current")
         val selectFile = options.indexOf("InstallMethod.SelectFile")
         val rootGate = options.indexOf("if (rootAvailable)")
         val direct = options.indexOf("InstallMethod.DirectInstall")
         assertTrue(selectFile >= 0 && rootGate > selectFile && direct > rootGate)
+    }
+
+    @Test
+    fun bootImagePickerSurvivesActivityRecreation() {
+        val install = source("src/main/java/me/ethereal/app/ui/screen/BootInstall.kt")
+
+        assertTrue(install.contains("rememberSaveable { mutableStateOf<InstallMethod?>(null) }"))
+        assertTrue(install.windowed("ActivityResultContracts.OpenDocument()".length)
+            .count { it == "ActivityResultContracts.OpenDocument()" } >= 2)
+        assertTrue(install.contains("takePersistableUriPermission("))
+        assertFalse(install.contains("selectingImage"))
     }
 
     @Test

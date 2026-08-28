@@ -3,6 +3,8 @@ package me.ethereal.app.ui.screen
 import android.app.Activity
 import android.content.Intent
 import android.net.Uri
+import android.os.Parcelable
+import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -45,11 +47,12 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -65,6 +68,7 @@ import com.ramcosta.composedestinations.generated.destinations.FlashScreenDestin
 import com.ramcosta.composedestinations.navigation.DestinationsNavigator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.parcelize.Parcelize
 import me.ethereal.app.EtherealApplication
 import me.ethereal.app.R
 import me.ethereal.app.ui.component.rememberConfirmDialog
@@ -78,36 +82,60 @@ import me.ethereal.app.util.isGkiKernel
 import me.ethereal.app.util.isKoFile
 import me.ethereal.app.util.slotSuffix
 
-sealed class InstallMethod {
+@Parcelize
+sealed class InstallMethod : Parcelable {
+    @Parcelize
     data class SelectFile(
-        val bootUri: Uri? = null,
-        val initBootUri: Uri? = null,
+        val bootUri: String? = null,
+        val initBootUri: String? = null,
         val gki2: Boolean,
         @param:StringRes override val label: Int = R.string.select_file,
         override val summary: String?,
     ) : InstallMethod()
 
+    @Parcelize
     data object DirectInstall : InstallMethod() {
         override val label: Int get() = R.string.direct_install
     }
 
+    @Parcelize
     data object DirectInstallToInactiveSlot : InstallMethod() {
         override val label: Int get() = R.string.install_inactive_slot
     }
 
     abstract val label: Int
-    open val summary: String? = null
+    open val summary: String? get() = null
 }
 
-private enum class BootImageKind { INIT_BOOT, BOOT }
+internal enum class BootImageKind { INIT_BOOT, BOOT }
+
+internal fun updateBootImageSelection(
+    current: InstallMethod.SelectFile?,
+    kind: BootImageKind,
+    uri: String,
+    gki2: Boolean,
+    summary: String?,
+): InstallMethod.SelectFile {
+    val selection = current
+        ?.takeIf { it.gki2 == gki2 }
+        ?: InstallMethod.SelectFile(gki2 = gki2, summary = summary)
+    return when (kind) {
+        BootImageKind.INIT_BOOT -> selection.copy(initBootUri = uri)
+        BootImageKind.BOOT -> selection.copy(bootUri = uri)
+    }
+}
+
+internal fun hasRequiredBootImages(method: InstallMethod.SelectFile): Boolean =
+    method.bootUri != null &&
+        (!method.gki2 || (method.initBootUri != null && method.initBootUri != method.bootUri))
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Destination<RootGraph>
 @Composable
 fun BootInstallScreen(navigator: DestinationsNavigator) {
     val context = LocalContext.current
-    var installMethod by remember { mutableStateOf<InstallMethod?>(null) }
-    var lkmSelection by remember { mutableStateOf<LkmSelection>(LkmSelection.KmiNone) }
+    var installMethod by rememberSaveable { mutableStateOf<InstallMethod?>(null) }
+    var lkmSelection by rememberSaveable { mutableStateOf<LkmSelection>(LkmSelection.KmiNone) }
     val isGKI = remember { isGkiKernel() }
     val isGki2 = remember { isGki2Device() }
 
@@ -120,9 +148,9 @@ fun BootInstallScreen(navigator: DestinationsNavigator) {
                     if (method.gki2) {
                         val initBoot = method.initBootUri ?: return@let
                         if (initBoot == boot) return@let
-                        FlashIt.BootSource.Gki2Files(initBoot.toString(), boot.toString())
+                        FlashIt.BootSource.Gki2Files(initBoot, boot)
                     } else {
-                        FlashIt.BootSource.Gki1File(boot.toString())
+                        FlashIt.BootSource.Gki1File(boot)
                     }
                 }
                 InstallMethod.DirectInstall,
@@ -248,9 +276,7 @@ fun BootInstallScreen(navigator: DestinationsNavigator) {
                     modifier = Modifier.fillMaxWidth(),
                     enabled = when (val method = installMethod) {
                         null -> false
-                        is InstallMethod.SelectFile -> method.bootUri != null &&
-                            (!method.gki2 || (method.initBootUri != null &&
-                                method.initBootUri != method.bootUri))
+                        is InstallMethod.SelectFile -> hasRequiredBootImages(method)
                         else -> true
                     },
                     onClick = onInstall,
@@ -302,35 +328,56 @@ private fun SelectInstallMethod(
         list
     }
 
-    var selectedOption by remember { mutableStateOf<InstallMethod?>(null) }
-    var selectingImage by remember { mutableStateOf<BootImageKind?>(null) }
+    val context = LocalContext.current
 
-    LaunchedEffect(selectedMethod) {
-        selectedOption = selectedMethod
-    }
-
-    val selectImageLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) {
-        if (it.resultCode == Activity.RESULT_OK) {
-            it.data?.data?.let { uri ->
-                val current = (selectedOption as? InstallMethod.SelectFile)
-                    ?: InstallMethod.SelectFile(gki2 = isGki2, summary = selectFileTip)
-                val option = when (selectingImage) {
-                    BootImageKind.INIT_BOOT -> current.copy(initBootUri = uri)
-                    BootImageKind.BOOT -> current.copy(bootUri = uri)
-                    null -> current
-                }
-                selectedOption = option
-                onSelected(option)
+    fun selectImage(kind: BootImageKind, uri: Uri) {
+        val current = selectedMethod as? InstallMethod.SelectFile
+        runCatching {
+            context.contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION,
+            )
+        }
+        val oldUri = when (kind) {
+            BootImageKind.INIT_BOOT -> current?.initBootUri
+            BootImageKind.BOOT -> current?.bootUri
+        }
+        val retainedUri = when (kind) {
+            BootImageKind.INIT_BOOT -> current?.bootUri
+            BootImageKind.BOOT -> current?.initBootUri
+        }
+        if (oldUri != null && oldUri != uri.toString() && oldUri != retainedUri) {
+            runCatching {
+                context.contentResolver.releasePersistableUriPermission(
+                    Uri.parse(oldUri),
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
             }
         }
-        selectingImage = null
+        onSelected(
+            updateBootImageSelection(
+                current = current,
+                kind = kind,
+                uri = uri.toString(),
+                gki2 = isGki2,
+                summary = selectFileTip,
+            )
+        )
+    }
+
+    val selectInitBootLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        uri?.let { selectImage(BootImageKind.INIT_BOOT, it) }
+    }
+    val selectBootLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        uri?.let { selectImage(BootImageKind.BOOT, it) }
     }
 
     val confirmDialog = rememberConfirmDialog(
         onConfirm = {
-            selectedOption = InstallMethod.DirectInstallToInactiveSlot
             onSelected(InstallMethod.DirectInstallToInactiveSlot)
         },
         onDismiss = null
@@ -341,16 +388,12 @@ private fun SelectInstallMethod(
     val onClick = { option: InstallMethod ->
         when (option) {
             is InstallMethod.SelectFile -> {
-                val current = (selectedOption as? InstallMethod.SelectFile)
+                val current = (selectedMethod as? InstallMethod.SelectFile)
                     ?.takeIf { it.gki2 == isGki2 }
                     ?: option
-                selectedOption = current
                 onSelected(current)
             }
-            is InstallMethod.DirectInstall -> {
-                selectedOption = option
-                onSelected(option)
-            }
+            is InstallMethod.DirectInstall -> onSelected(option)
             is InstallMethod.DirectInstallToInactiveSlot -> {
                 confirmDialog.showConfirm(dialogTitle, dialogContent)
             }
@@ -359,13 +402,9 @@ private fun SelectInstallMethod(
 
     var lkmExpanded by remember { mutableStateOf(true) }
     val notSelected = stringResource(R.string.file_not_selected)
-
-    fun launchImagePicker(kind: BootImageKind) {
-        selectingImage = kind
-        selectImageLauncher.launch(Intent(Intent.ACTION_GET_CONTENT).apply {
-            type = "application/octet-stream"
-        })
-    }
+    val selectedFiles = selectedMethod as? InstallMethod.SelectFile
+    val initBootName = rememberDocumentDisplayName(selectedFiles?.initBootUri, notSelected)
+    val bootName = rememberDocumentDisplayName(selectedFiles?.bootUri, notSelected)
 
     Column(modifier = Modifier.padding(horizontal = 16.dp)) {
         if (isGKI) {
@@ -397,22 +436,22 @@ private fun SelectInstallMethod(
                 ) {
                     Column(modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp)) {
                         radioOptions.forEach { option ->
-                            MethodRadio(option, selectedOption, onClick)
+                            MethodRadio(option, selectedMethod, onClick)
                         }
-                        (selectedOption as? InstallMethod.SelectFile)?.let { files ->
+                        selectedFiles?.let { files ->
                             if (files.gki2) {
                                 SettingsBaseWidget(
                                     icon = Icons.AutoMirrored.Filled.Input,
                                     title = stringResource(R.string.select_init_boot_image),
-                                    description = files.initBootUri?.lastPathSegment ?: notSelected,
-                                    onClick = { launchImagePicker(BootImageKind.INIT_BOOT) },
+                                    description = initBootName,
+                                    onClick = { selectInitBootLauncher.launch(arrayOf("*/*")) },
                                 ) { }
                             }
                             SettingsBaseWidget(
                                 icon = Icons.AutoMirrored.Filled.Input,
                                 title = stringResource(R.string.select_boot_image),
-                                description = files.bootUri?.lastPathSegment ?: notSelected,
-                                onClick = { launchImagePicker(BootImageKind.BOOT) },
+                                description = bootName,
+                                onClick = { selectBootLauncher.launch(arrayOf("*/*")) },
                             ) { }
                         }
                     }
@@ -420,25 +459,63 @@ private fun SelectInstallMethod(
             }
         } else {
             radioOptions.forEach { option ->
-                MethodRadio(option, selectedOption, onClick)
+                MethodRadio(option, selectedMethod, onClick)
             }
-            (selectedOption as? InstallMethod.SelectFile)?.let { files ->
+            selectedFiles?.let { files ->
                 if (files.gki2) {
                     SettingsBaseWidget(
                         icon = Icons.AutoMirrored.Filled.Input,
                         title = stringResource(R.string.select_init_boot_image),
-                        description = files.initBootUri?.lastPathSegment ?: notSelected,
-                        onClick = { launchImagePicker(BootImageKind.INIT_BOOT) },
+                        description = initBootName,
+                        onClick = { selectInitBootLauncher.launch(arrayOf("*/*")) },
                     ) { }
                 }
                 SettingsBaseWidget(
                     icon = Icons.AutoMirrored.Filled.Input,
                     title = stringResource(R.string.select_boot_image),
-                    description = files.bootUri?.lastPathSegment ?: notSelected,
-                    onClick = { launchImagePicker(BootImageKind.BOOT) },
+                    description = bootName,
+                    onClick = { selectBootLauncher.launch(arrayOf("*/*")) },
                 ) { }
             }
         }
+    }
+}
+
+@Composable
+private fun rememberDocumentDisplayName(uriString: String?, notSelected: String): String {
+    val context = LocalContext.current
+    val fallback = remember(uriString, notSelected) {
+        uriString
+            ?.let(Uri::parse)
+            ?.lastPathSegment
+            ?.takeIf(String::isNotBlank)
+            ?: if (uriString == null) notSelected else "(file)"
+    }
+    return key(uriString, notSelected) {
+        produceState(initialValue = fallback, uriString, notSelected) {
+            if (uriString == null) {
+                value = notSelected
+                return@produceState
+            }
+            value = withContext(Dispatchers.IO) {
+                runCatching {
+                    context.contentResolver.query(
+                        Uri.parse(uriString),
+                        arrayOf(OpenableColumns.DISPLAY_NAME),
+                        null,
+                        null,
+                        null,
+                    )?.use { cursor ->
+                        val nameColumn = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (nameColumn >= 0 && cursor.moveToFirst()) {
+                            cursor.getString(nameColumn)
+                        } else {
+                            null
+                        }
+                    }
+                }.getOrNull()?.takeIf(String::isNotBlank) ?: fallback
+            }
+        }.value
     }
 }
 
