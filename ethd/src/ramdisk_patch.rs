@@ -7,7 +7,8 @@
 
 use anyhow::{Context, Result, bail, ensure};
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -843,16 +844,135 @@ fn path_identity(path: &Path) -> PathBuf {
         .unwrap_or(absolute)
 }
 
-fn staged_output(out: &Path, label: &str) -> Result<PathBuf> {
+fn output_parent(out: &Path) -> &Path {
+    out.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
+fn normalized_output_path(out: &Path) -> Result<PathBuf> {
+    let name = out.file_name().context("output path has no file name")?;
+    let parent = output_parent(out)
+        .canonicalize()
+        .with_context(|| format!("resolve output directory {}", output_parent(out).display()))?;
+    Ok(parent.join(name))
+}
+
+fn staged_output(out: &Path, label: &str, nonce: u64) -> Result<PathBuf> {
     let name = out
         .file_name()
         .and_then(|name| name.to_str())
         .context("output path has no file name")?;
-    let parent = out.parent().unwrap_or_else(|| Path::new("."));
+    let parent = output_parent(out);
     Ok(parent.join(format!(
-        ".{name}.ethereal-{}-{label}.tmp",
-        std::process::id()
+        ".{name}.ethereal-{}-{label}-{nonce:016x}.tmp",
+        std::process::id(),
     )))
+}
+
+fn root_staging_parent_is_safe(mode: u32, owner_uid: u32, effective_uid: u32) -> bool {
+    effective_uid != 0 || (owner_uid == 0 && mode & 0o022 == 0)
+}
+
+fn cleanup_stale_staged_outputs(parent: &Path, output_name: &str) -> Result<()> {
+    let prefix = format!(".{output_name}.ethereal-");
+    let current_pid = std::process::id();
+    for entry in fs::read_dir(parent)
+        .with_context(|| format!("scan output directory {}", parent.display()))?
+    {
+        let entry = entry?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let Some(rest) = name.strip_prefix(&prefix) else {
+            continue;
+        };
+        if !rest.ends_with(".tmp") {
+            continue;
+        }
+        let Some(pid) = rest
+            .split_once('-')
+            .and_then(|(pid, _)| pid.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if pid == current_pid || Path::new("/proc").join(pid.to_string()).exists() {
+            continue;
+        }
+        let file_type = entry.file_type()?;
+        if file_type.is_file() || file_type.is_symlink() {
+            fs::remove_file(entry.path()).with_context(|| {
+                format!("remove stale staged output {}", entry.path().display())
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn reserve_staged_output(out: &Path, label: &str) -> Result<PathBuf> {
+    let parent = output_parent(out);
+    let parent_metadata = fs::metadata(parent)
+        .with_context(|| format!("stat output directory {}", parent.display()))?;
+    ensure!(
+        parent_metadata.is_dir(),
+        "output parent is not a directory: {}",
+        parent.display()
+    );
+    let effective_uid = unsafe { libc::geteuid() };
+    ensure!(
+        root_staging_parent_is_safe(
+            parent_metadata.permissions().mode(),
+            parent_metadata.uid(),
+            effective_uid,
+        ),
+        "refusing root image staging outside a root-owned private directory: {}",
+        parent.display()
+    );
+    let output_name = out
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("output path has no file name")?;
+    cleanup_stale_staged_outputs(parent, output_name)?;
+
+    for _ in 0..32 {
+        let mut nonce = [0u8; 8];
+        OpenOptions::new()
+            .read(true)
+            .open("/dev/urandom")
+            .context("open /dev/urandom for staging nonce")?
+            .read_exact(&mut nonce)
+            .context("read staging nonce")?;
+        let staged = staged_output(out, label, u64::from_ne_bytes(nonce))?;
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(&staged)
+        {
+            Ok(_) => return Ok(staged),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("reserve staging file {}", staged.display()));
+            }
+        }
+    }
+    bail!(
+        "could not reserve a unique staging file beside {}",
+        out.display()
+    )
+}
+
+fn staged_regular_file_len(path: &Path) -> Result<u64> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("stat staged output {}", path.display()))?;
+    ensure!(
+        metadata.file_type().is_file(),
+        "staged output is no longer a regular file: {}",
+        path.display()
+    );
+    Ok(metadata.len())
 }
 
 fn remove_if_present(path: &Path) {
@@ -921,29 +1041,27 @@ where
 {
     // A patched image is either complete or absent. Half-written boot files are bad souvenirs.
     let input_identity = path_identity(input);
-    let output_identity = path_identity(out);
+    let resolved_out = normalized_output_path(out)?;
+    let output_identity = path_identity(&resolved_out);
     ensure!(
         input_identity != output_identity,
         "output must not overwrite the input image"
     );
-    ensure_path_absent(out, "output path must not already exist")?;
+    ensure_path_absent(&resolved_out, "output path must not already exist")?;
 
-    let staged = staged_output(out, label)?;
-    ensure!(
-        path_identity(&staged) != input_identity,
-        "staging path aliases the input image"
-    );
-    remove_if_present(&staged);
+    let staged = reserve_staged_output(&resolved_out, label)?;
+    if path_identity(&staged) == input_identity {
+        remove_if_present(&staged);
+        bail!("staging path aliases the input image");
+    }
 
     let result = (|| -> Result<()> {
         build(&staged)?;
-        let staged_len = fs::metadata(&staged)
-            .with_context(|| format!("stat staged output {}", staged.display()))?
-            .len();
+        let staged_len = staged_regular_file_len(&staged)?;
         ensure!(staged_len > 0, "patched output is empty");
-        ensure_path_absent(out, "output path appeared while patching")?;
-        fs::rename(&staged, out)
-            .with_context(|| format!("publish patched output {}", out.display()))?;
+        ensure_path_absent(&resolved_out, "output path appeared while patching")?;
+        fs::rename(&staged, &resolved_out)
+            .with_context(|| format!("publish patched output {}", resolved_out.display()))?;
         Ok(())
     })();
 
@@ -954,24 +1072,30 @@ where
 }
 
 pub fn boot_patch_pair(args: PairPatchArgs) -> Result<()> {
-    let staged_init = staged_output(&args.out_init_boot, "init-boot")?;
-    let staged_boot = staged_output(&args.out_boot, "boot")?;
-    ensure_pair_paths_safe(
+    let out_init_boot = normalized_output_path(&args.out_init_boot)?;
+    let out_boot = normalized_output_path(&args.out_boot)?;
+    ensure_path_absent(&out_init_boot, "paired output paths must not already exist")?;
+    ensure_path_absent(&out_boot, "paired output paths must not already exist")?;
+    let staged_init = reserve_staged_output(&out_init_boot, "init-boot")?;
+    let staged_boot = match reserve_staged_output(&out_boot, "boot") {
+        Ok(path) => path,
+        Err(error) => {
+            remove_if_present(&staged_init);
+            return Err(error);
+        }
+    };
+    if let Err(error) = ensure_pair_paths_safe(
         &args.init_boot,
         &args.boot,
-        &args.out_init_boot,
-        &args.out_boot,
+        &out_init_boot,
+        &out_boot,
         &staged_init,
         &staged_boot,
-    )?;
-    ensure_path_absent(
-        &args.out_init_boot,
-        "paired output paths must not already exist",
-    )?;
-    ensure_path_absent(&args.out_boot, "paired output paths must not already exist")?;
-    remove_if_present(&staged_init);
-    remove_if_present(&staged_boot);
-
+    ) {
+        remove_if_present(&staged_init);
+        remove_if_present(&staged_boot);
+        return Err(error);
+    }
     let mut published_init = false;
     let mut published_boot = false;
     let result = (|| -> Result<()> {
@@ -1001,8 +1125,8 @@ pub fn boot_patch_pair(args: PairPatchArgs) -> Result<()> {
         )?;
         print_output(&boot_patch);
 
-        let staged_init_len = fs::metadata(&staged_init)?.len();
-        let staged_boot_len = fs::metadata(&staged_boot)?.len();
+        let staged_init_len = staged_regular_file_len(&staged_init)?;
+        let staged_boot_len = staged_regular_file_len(&staged_boot)?;
         let original_boot_len = fs::metadata(&args.boot)?.len();
         ensure!(staged_init_len > 0, "patched init_boot output is empty");
         ensure!(staged_boot_len > 0, "patched boot output is empty");
@@ -1012,19 +1136,19 @@ pub fn boot_patch_pair(args: PairPatchArgs) -> Result<()> {
         );
 
         ensure_path_absent(
-            &args.out_init_boot,
+            &out_init_boot,
             "paired init_boot output appeared while patching",
         )?;
-        ensure_path_absent(&args.out_boot, "paired boot output appeared while patching")?;
-        fs::rename(&staged_init, &args.out_init_boot).with_context(|| {
+        ensure_path_absent(&out_boot, "paired boot output appeared while patching")?;
+        fs::rename(&staged_init, &out_init_boot).with_context(|| {
             format!(
                 "publish paired init_boot output {}",
-                args.out_init_boot.display()
+                out_init_boot.display()
             )
         })?;
         published_init = true;
-        fs::rename(&staged_boot, &args.out_boot)
-            .with_context(|| format!("publish paired boot output {}", args.out_boot.display()))?;
+        fs::rename(&staged_boot, &out_boot)
+            .with_context(|| format!("publish paired boot output {}", out_boot.display()))?;
         published_boot = true;
         Ok(())
     })();
@@ -1033,10 +1157,10 @@ pub fn boot_patch_pair(args: PairPatchArgs) -> Result<()> {
         remove_if_present(&staged_init);
         remove_if_present(&staged_boot);
         if published_init {
-            remove_if_present(&args.out_init_boot);
+            remove_if_present(&out_init_boot);
         }
         if published_boot {
-            remove_if_present(&args.out_boot);
+            remove_if_present(&out_boot);
         }
         return Err(error);
     }
@@ -1113,7 +1237,9 @@ pub fn boot_unpatch(image: PathBuf, out: PathBuf) -> Result<()> {
                 !vendor && has_kernel && rdinit == RdinitState::Ethereal,
                 "image has neither a complete Ethereal ramdisk patch nor an Ethereal rdinit"
             );
-            strip_rdinit()?;
+            bail!(
+                "a GKI 2.0 paired boot cannot be unpatched alone; restore its matching boot and init_boot together"
+            );
         }
         let staged_s = staged.to_string_lossy().into_owned();
         let repack = run(&ramtool, &["repack", &image.to_string_lossy(), &staged_s])?;
@@ -1309,8 +1435,8 @@ mod tests {
         let boot_output = dir.join("out-boot.img");
         fs::write(&init_input, b"init").unwrap();
         fs::write(&boot_input, b"boot").unwrap();
-        let staged_init = staged_output(&init_output, "init-boot").unwrap();
-        let staged_boot = staged_output(&boot_output, "boot").unwrap();
+        let staged_init = staged_output(&init_output, "init-boot", 1).unwrap();
+        let staged_boot = staged_output(&boot_output, "boot", 2).unwrap();
 
         ensure_pair_paths_safe(
             &init_input,
@@ -1372,7 +1498,6 @@ mod tests {
         assert!(alias_error.to_string().contains("must not overwrite"));
         assert_eq!(fs::read(&input).unwrap(), b"stock");
 
-        let staged = staged_output(&output, "test").unwrap();
         let build_error = stage_single_output(&input, &output, "test", |pending| {
             fs::write(pending, b"partial")?;
             Err(anyhow::anyhow!("forced build failure"))
@@ -1380,7 +1505,7 @@ mod tests {
         .unwrap_err();
         assert!(build_error.to_string().contains("forced build failure"));
         assert!(!output.exists());
-        assert!(!staged.exists());
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
 
         stage_single_output(&input, &output, "test", |pending| {
             fs::write(pending, b"patched")?;
@@ -1397,6 +1522,40 @@ mod tests {
         );
         assert_eq!(fs::read(&output).unwrap(), b"patched");
 
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn root_staging_rejects_shared_writable_directories() {
+        assert!(root_staging_parent_is_safe(0o700, 0, 0));
+        assert!(root_staging_parent_is_safe(0o755, 0, 0));
+        assert!(!root_staging_parent_is_safe(0o700, 10000, 0));
+        assert!(!root_staging_parent_is_safe(0o770, 0, 0));
+        assert!(!root_staging_parent_is_safe(0o777, 0, 0));
+        assert!(root_staging_parent_is_safe(0o777, 10000, 10000));
+    }
+
+    #[test]
+    fn stale_staging_files_are_cleaned_without_touching_live_or_unrelated_files() {
+        let dir = unique_dir("stale-staging");
+        fs::create_dir_all(&dir).unwrap();
+        let output_name = "output.img";
+        let dead = dir.join(format!(
+            ".{output_name}.ethereal-4294967295-patch-deadbeef.tmp"
+        ));
+        let live = dir.join(format!(
+            ".{output_name}.ethereal-{}-patch-livebeef.tmp",
+            std::process::id()
+        ));
+        let unrelated = dir.join("keep.tmp");
+        fs::write(&dead, b"dead").unwrap();
+        fs::write(&live, b"live").unwrap();
+        fs::write(&unrelated, b"keep").unwrap();
+
+        cleanup_stale_staged_outputs(&dir, output_name).unwrap();
+        assert!(!dead.exists());
+        assert!(live.exists());
+        assert!(unrelated.exists());
         fs::remove_dir_all(dir).unwrap();
     }
 }

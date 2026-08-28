@@ -1,6 +1,7 @@
 use crate::compress::{self, Format};
-use anyhow::{bail, ensure, Result};
+use anyhow::{bail, ensure, Context, Result};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 const BOOT_MAGIC: &[u8; 8] = b"ANDROID!";
@@ -26,6 +27,34 @@ fn read_image(path: &Path) -> Result<Vec<u8>> {
         MAX_BOOT_IMAGE_SIZE / (1024 * 1024)
     );
     Ok(data)
+}
+
+fn write_image_output(path: &Path, data: &[u8]) -> Result<()> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true);
+    #[cfg(any(target_os = "android", target_os = "linux"))]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // Linux O_NOFOLLOW. The patcher reserves this file first, but the
+        // writer still refuses a symlink if somebody swaps the directory entry.
+        // O_NONBLOCK also keeps a swapped FIFO from parking the patcher forever.
+        options.custom_flags(0o400000 | 0o4000);
+    }
+    let mut output = options
+        .open(path)
+        .with_context(|| format!("open image output {}", path.display()))?;
+    ensure!(
+        output.metadata()?.file_type().is_file(),
+        "image output is not a regular file: {}",
+        path.display()
+    );
+    output
+        .set_len(0)
+        .with_context(|| format!("truncate image output {}", path.display()))?;
+    output
+        .write_all(data)
+        .with_context(|| format!("write image output {}", path.display()))?;
+    Ok(())
 }
 
 fn r32(data: &[u8], off: usize) -> Result<u32> {
@@ -460,7 +489,7 @@ pub fn patch_gki2_boot_cmdline(orig: &Path, out: &Path) -> Result<()> {
         patched.len() == original.len(),
         "internal error: cmdline patch changed boot image length"
     );
-    fs::write(out, patched)?;
+    write_image_output(out, &patched)?;
     println!("Patched GKI 2.0 boot cmdline to {}", out.display());
     Ok(())
 }
@@ -711,7 +740,7 @@ pub fn repack(orig: &Path, dir: &Path, out: &Path) -> Result<()> {
         if dtb_off < orig_data.len() {
             image.extend_from_slice(&orig_data[dtb_off..]);
         }
-        fs::write(out, &image)?;
+        write_image_output(out, &image)?;
         println!("Repack to {}", out.display());
         return Ok(());
     }
@@ -759,7 +788,7 @@ pub fn repack(orig: &Path, dir: &Path, out: &Path) -> Result<()> {
     // remains byte-for-byte untouched.
     fixed[..tail_start].fill(0);
     fixed[..image.len()].copy_from_slice(&image);
-    fs::write(out, &fixed)?;
+    write_image_output(out, &fixed)?;
     println!("Repack to {}", out.display());
     Ok(())
 }
@@ -879,7 +908,7 @@ fn repack_vendor_v4(
     if image.len() < orig_data.len() {
         image.resize(orig_data.len(), 0);
     }
-    fs::write(out, &image)?;
+    write_image_output(out, &image)?;
     println!("Repack to {}", out.display());
     Ok(())
 }
@@ -1169,6 +1198,23 @@ mod tests {
         boot_with_ramdisk[0x0c..0x10].copy_from_slice(&64u32.to_le_bytes());
         let error = patch_gki2_boot_cmdline_bytes(&boot_with_ramdisk).unwrap_err();
         assert!(error.to_string().contains("kernel-only boot image"));
+    }
+
+    #[cfg(any(target_os = "android", target_os = "linux"))]
+    #[test]
+    fn image_output_writer_refuses_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let dir = unique_dir("output-symlink");
+        fs::create_dir_all(&dir).unwrap();
+        let victim = dir.join("victim.img");
+        let output = dir.join("output.img");
+        fs::write(&victim, b"leave me alone").unwrap();
+        symlink(&victim, &output).unwrap();
+
+        assert!(write_image_output(&output, b"patched").is_err());
+        assert_eq!(fs::read(&victim).unwrap(), b"leave me alone");
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

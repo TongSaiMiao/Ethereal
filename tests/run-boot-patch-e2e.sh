@@ -8,7 +8,8 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${ETHEREAL_ROOT:-$(cd -- "$SCRIPT_DIR/.." && pwd)}"
 ROOT="$(cd -- "$ROOT" && pwd -P)"
 LOCKS="$ROOT/kmod/gki-locks.tsv"
-OUT_BASE="$ROOT/tests/out/boot-patch-e2e"
+TEST_OUT_ROOT="${ETHEREAL_TEST_OUT_ROOT:-$ROOT/tests/out}"
+OUT_BASE="$TEST_OUT_ROOT/boot-patch-e2e"
 OFFICIAL_CACHE="${GKI_OFFICIAL_CACHE:-/root/gki-official}"
 
 for tool in awk basename realpath; do
@@ -38,7 +39,7 @@ OUT="$(realpath -m -- "$OUT_BASE/$KMI")"
   echo "refusing unsafe KMI output path: $OUT" >&2
   exit 2
 }
-TARGETS="$ROOT/tests/out/targets"
+TARGETS="${ETHEREAL_TEST_TARGETS:-$ROOT/tests/out/targets}"
 PROVENANCE="$ROOT/kmod/prebuilt/$KMI/provenance.env"
 KERNEL_SHA256=""
 OFFICIAL_RELEASE=""
@@ -811,18 +812,20 @@ for bundled_kmi in \
 done
 verify_fixed_tail "$OUT/init_boot.img" "$OUT/restored-single-init_boot.img"
 
-mkdir -p "$OUT/work-pair-unpatch" "$OUT/unpack-pair-restored-boot"
+mkdir -p "$OUT/work-pair-unpatch"
 cp -f "$RAMTOOL" "$OUT/work-pair-unpatch/ramtool"
-(
+if (
   cd "$OUT/work-pair-unpatch"
   "$ETHD" boot-unpatch \
     --image "$OUT/Ethereal-boot.img" \
     --out "$OUT/restored-pair-boot.img"
-)
-unpack_image "$OUT/restored-pair-boot.img" "$OUT/unpack-pair-restored-boot"
-! grep -qw "rdinit=/ethereal-init" "$OUT/unpack-pair-restored-boot/cmdline.txt"
-test ! -e "$OUT/unpack-pair-restored-boot/ramdisk.cpio"
-verify_fixed_tail "$OUT/boot.img" "$OUT/restored-pair-boot.img"
+) >"$OUT/pair-boot-single-unpatch-reject.log" 2>&1; then
+  echo "single-image unpatch accepted the boot half of a GKI 2.0 pair" >&2
+  exit 1
+fi
+grep -q "paired boot cannot be unpatched alone" \
+  "$OUT/pair-boot-single-unpatch-reject.log"
+test ! -e "$OUT/restored-pair-boot.img"
 
 unpack_image "$OUT/boot.img" "$OUT/unpack-stock-boot"
 PAIR_CMDLINE="$(tr '\000\r\n' '   ' < "$OUT/unpack-boot/cmdline.txt")"
