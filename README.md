@@ -1,6 +1,6 @@
 <div align="center">
   <img
-    src="fastlane/metadata/android/en-US/images/icon.png"
+    src="app/src/main/res/drawable-nodpi/ic_launcher_monochrome.png"
     alt="Ethereal app icon"
     width="120"
   />
