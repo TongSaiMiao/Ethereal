@@ -91,7 +91,7 @@ feature_marker="$(tr -d '\r\n' < "$ROOT/kmod/feature-marker.txt")"
   exit 2
 }
 
-for command_name in unzip grep od tr find sort modinfo mktemp cmp; do
+for command_name in unzip grep od tr find sort modinfo mktemp cmp readelf; do
   command -v "$command_name" >/dev/null 2>&1 ||
     fail "required command is unavailable: $command_name"
 done
@@ -130,6 +130,32 @@ scan_file() {
   if LC_ALL=C od -An -tx4 -v -- "$path" |
       grep -EiE -- "$legacy_magic_word_re" >/dev/null; then
     fail "$label contains legacy protocol magic bytes"
+  fi
+}
+
+check_standalone_elf() {
+  local label="$1"
+  local elf="$2"
+  local dynamic symbols
+
+  if [[ ! -s "$elf" ]]; then
+    fail "$label is missing or empty: $elf"
+    return
+  fi
+  if ! dynamic="$(LC_ALL=C readelf --dynamic --wide "$elf" 2>&1)"; then
+    fail "$label has an unreadable ELF dynamic section"
+    return
+  fi
+  if grep -Fq 'Shared library: [libc++_shared.so]' <<< "$dynamic"; then
+    fail "$label depends on libc++_shared.so but is executed as a standalone binary"
+  fi
+  if ! symbols="$(LC_ALL=C readelf --dyn-syms --wide "$elf" 2>&1)"; then
+    fail "$label has an unreadable ELF dynamic symbol table"
+    return
+  fi
+  if grep -E 'UND[[:space:]]+.*(_Z|__cxa_|__gxx_personality)' <<< "$symbols" |
+      grep -Ev '__cxa_[[:alnum:]_]+@LIBC([[:space:]]|$)' >/dev/null; then
+    fail "$label leaves C++ runtime symbols unresolved for the Android linker"
   fi
 }
 
@@ -228,6 +254,10 @@ payload_files=(
 for payload in "${payload_files[@]}"; do
   scan_file "generated payload ${payload#"$ROOT"/}" "$payload"
 done
+check_standalone_elf "generated payload app/src/main/assets/ethd.full" \
+  "$ROOT/app/src/main/assets/ethd.full"
+check_standalone_elf "generated payload app/libs/arm64-v8a/libethd.so" \
+  "$ROOT/app/libs/arm64-v8a/libethd.so"
 
 declare -A expected_module_names=()
 generated_kmod_dir="$ROOT/app/build/generated/kmod-assets/kmod"
@@ -325,6 +355,10 @@ if [[ -d "$unpack_dir" && -n "$(find "$unpack_dir" -mindepth 1 -print -quit)" ]]
     [[ -s "$unpack_dir/$entry" ]] ||
       fail "APK required native payload is missing or empty: $entry"
   done
+  check_standalone_elf "APK payload assets/ethd.full" \
+    "$unpack_dir/assets/ethd.full"
+  check_standalone_elf "APK native patcher lib/arm64-v8a/libethd.so" \
+    "$unpack_dir/lib/arm64-v8a/libethd.so"
 
   apk_kmod_dir="$unpack_dir/assets/kmod"
   apk_module_count=0

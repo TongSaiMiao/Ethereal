@@ -1,4 +1,5 @@
 use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 fn add_files(build: &mut cc::Build, root: &Path, files: &[&str]) {
@@ -11,6 +12,39 @@ fn add_files(build: &mut cc::Build, root: &Path, files: &[&str]) {
         );
         build.file(path);
     }
+}
+
+fn compiler_library(build: &cc::Build, name: &str) -> PathBuf {
+    let output = build
+        .get_compiler()
+        .to_command()
+        .arg(format!("--print-file-name={name}"))
+        .output()
+        .unwrap_or_else(|error| panic!("failed to ask the C++ compiler for {name}: {error}"));
+    assert!(
+        output.status.success(),
+        "C++ compiler could not locate {name}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let path = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    assert!(
+        path.is_file(),
+        "C++ compiler returned a missing {name}: {}",
+        path.display()
+    );
+    path
+}
+
+fn stage_compiler_library(build: &cc::Build, name: &str, destination: &Path) {
+    let source = compiler_library(build, name);
+    let output = destination.join(name);
+    fs::copy(&source, &output).unwrap_or_else(|error| {
+        panic!(
+            "failed to stage {} as {}: {error}",
+            source.display(),
+            output.display()
+        )
+    });
 }
 
 fn main() {
@@ -122,6 +156,17 @@ fn main() {
         .include(sepol.join("src"))
         .include(sepol.join("cil/src"))
         .warnings(false);
+    let android_cpp_runtime = if target_os == "android" {
+        // ethd gets copied out of the APK and execve'd on its own. Bring libc++ along.
+        cpp.cpp_link_stdlib(None);
+        let destination = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("android-cxx");
+        fs::create_dir_all(&destination).unwrap();
+        stage_compiler_library(&cpp, "libc++_static.a", &destination);
+        stage_compiler_library(&cpp, "libc++abi.a", &destination);
+        Some(destination)
+    } else {
+        None
+    };
     add_files(
         &mut cpp,
         &root,
@@ -133,6 +178,11 @@ fn main() {
         ],
     );
     cpp.compile("magiskpolicy_cpp");
+    if let Some(runtime) = android_cpp_runtime {
+        println!("cargo:rustc-link-search=native={}", runtime.display());
+        println!("cargo:rustc-link-lib=static=c++_static");
+        println!("cargo:rustc-link-lib=static=c++abi");
+    }
 
     if target_os == "linux" {
         println!("cargo:rustc-link-lib=m");
