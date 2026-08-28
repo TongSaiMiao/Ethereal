@@ -1,4 +1,9 @@
 <div align="center">
+  <p>
+    <strong>English</strong> ·
+    <a href="README_zh-CN.md">简体中文</a> ·
+    <a href="README_zh-TW.md">繁體中文</a>
+  </p>
   <img
     src="app/src/main/res/drawable-nodpi/ic_launcher_monochrome.png"
     alt="Ethereal app icon"
@@ -265,6 +270,7 @@ location, and the limits of QEMU coverage.
 
 - [FAQ (English)](docs/en/faq.md)
 - [常见问题（简体中文）](docs/cn/faq_cn.md)
+- [常見問題（繁體中文）](docs/cn_tw/faq_cn_tw.md)
 - [Ethereal 模块开发指南](docs/cn/ethereal_module.md)
 - [Bug reports](https://github.com/TongSaiMiao/Ethereal/issues/new?template=bug_report.yml)
 - [Feature requests](https://github.com/TongSaiMiao/Ethereal/issues/new?template=feature_request.yml)
@@ -276,9 +282,10 @@ clear reproduction steps.
 
 ## Translations
 
-English and Chinese are maintainer-owned reference locales. Other translations
-may be LLM-assisted. Keep each translation PR limited to one locale; changes to
-the reference locales are handled by the maintainers.
+English, Simplified Chinese, and Traditional Chinese are maintainer-owned
+reference locales. Other translations may be LLM-assisted. Keep each
+translation PR limited to one locale; changes to the reference locales are
+handled by the maintainers.
 
 ## Third-party software and acknowledgements
 
