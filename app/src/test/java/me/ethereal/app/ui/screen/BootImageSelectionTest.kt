@@ -3,70 +3,67 @@ package me.ethereal.app.ui.screen
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class BootImageSelectionTest {
     @Test
-    fun initBootSelectionUpdatesOnlyInitBoot() {
+    fun bootImageSelectionEnablesOfflinePatch() {
         val selected = updateBootImageSelection(
             current = null,
-            kind = BootImageKind.INIT_BOOT,
+            uri = "content://images/boot.img",
+            summary = "Select one image",
+        )
+
+        assertEquals("content://images/boot.img", selected.imageUri)
+        assertTrue(hasSelectedBootImage(selected))
+    }
+
+    @Test
+    fun initBootImageSelectionEnablesOfflinePatch() {
+        val selected = updateBootImageSelection(
+            current = null,
             uri = "content://images/init_boot.img",
-            gki2 = true,
-            summary = "Select both images",
+            summary = "Select one image",
         )
 
-        assertEquals("content://images/init_boot.img", selected.initBootUri)
-        assertNull(selected.bootUri)
+        assertEquals("content://images/init_boot.img", selected.imageUri)
+        assertTrue(hasSelectedBootImage(selected))
     }
 
     @Test
-    fun bootSelectionPreservesPreviouslySelectedInitBoot() {
-        val initBoot = InstallMethod.SelectFile(
-            initBootUri = "content://images/init_boot.img",
-            gki2 = true,
-            summary = "Select both images",
+    fun reselectionReplacesPreviousImage() {
+        val boot = InstallMethod.SelectFile(
+            imageUri = "content://images/boot.img",
+            summary = "Select one image",
         )
 
         val selected = updateBootImageSelection(
-            current = initBoot,
-            kind = BootImageKind.BOOT,
-            uri = "content://images/boot.img",
-            gki2 = true,
-            summary = "Select both images",
+            current = boot,
+            uri = "content://images/init_boot.img",
+            summary = "Select one image",
         )
 
-        assertEquals("content://images/init_boot.img", selected.initBootUri)
-        assertEquals("content://images/boot.img", selected.bootUri)
-        assertTrue(hasRequiredBootImages(selected))
+        assertEquals("content://images/init_boot.img", selected.imageUri)
+        assertTrue(hasSelectedBootImage(selected))
     }
 
     @Test
-    fun gki1BootSelectionDoesNotRequireInitBoot() {
+    fun missingOrBlankImageCannotContinue() {
+        val missing = InstallMethod.SelectFile(summary = "Select one image")
+        val blank = missing.copy(imageUri = "   ")
+
+        assertFalse(hasSelectedBootImage(missing))
+        assertFalse(hasSelectedBootImage(blank))
+    }
+
+    @Test
+    fun unknownFileNameDoesNotBlockOfflinePatch() {
         val selected = updateBootImageSelection(
             current = null,
-            kind = BootImageKind.BOOT,
-            uri = "content://images/boot.img",
-            gki2 = false,
-            summary = "Select boot image",
+            uri = "content://images/payload.bin",
+            summary = "Select one image",
         )
 
-        assertEquals("content://images/boot.img", selected.bootUri)
-        assertNull(selected.initBootUri)
-        assertTrue(hasRequiredBootImages(selected))
-    }
-
-    @Test
-    fun gki2RejectsMissingOrDuplicateImages() {
-        val missingBoot = InstallMethod.SelectFile(
-            initBootUri = "content://images/init_boot.img",
-            gki2 = true,
-            summary = "Select both images",
-        )
-        val duplicate = missingBoot.copy(bootUri = missingBoot.initBootUri)
-
-        assertFalse(hasRequiredBootImages(missingBoot))
-        assertFalse(hasRequiredBootImages(duplicate))
+        assertTrue(hasSelectedBootImage(selected))
     }
 }

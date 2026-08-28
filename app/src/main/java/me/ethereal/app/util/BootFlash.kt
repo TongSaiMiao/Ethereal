@@ -7,7 +7,6 @@ import android.os.Environment
 import android.os.Parcelable
 import android.provider.MediaStore
 import android.util.Log
-import androidx.annotation.RequiresApi
 import kotlinx.parcelize.Parcelize
 import me.ethereal.app.EtherealApplication
 import me.ethereal.app.etherealApp
@@ -36,10 +35,7 @@ sealed class FlashIt : Parcelable {
     @Parcelize
     sealed class BootSource : Parcelable {
         @Parcelize
-        data class Gki1File(val boot: String) : BootSource()
-
-        @Parcelize
-        data class Gki2Files(val initBoot: String, val boot: String) : BootSource()
+        data class ImageFile(val image: String) : BootSource()
 
         @Parcelize
         data object Direct : BootSource()
@@ -179,6 +175,23 @@ private fun runProcess(args: List<String>, cwd: File, onLine: (String) -> Unit):
     return process.waitFor()
 }
 
+internal fun selectedImageOutputName(displayName: String?, uriLastPathSegment: String?): String {
+    fun baseName(value: String?): String? = value
+        ?.trim()
+        ?.substringAfterLast('/')
+        ?.substringAfterLast('\\')
+        ?.takeIf { it.isNotBlank() }
+
+    baseName(displayName)?.let { return it }
+
+    // Some document providers are shy about DISPLAY_NAME. Keep a real .img basename
+    // when the URI gives us one; otherwise stay neutral instead of guessing a partition.
+    return baseName(uriLastPathSegment)
+        ?.substringAfterLast(':')
+        ?.takeIf { it.endsWith(".img", ignoreCase = true) }
+        ?: "selected-image.img"
+}
+
 private fun selectedName(uri: Uri): String {
     val queried = runCatching {
         etherealApp.contentResolver.query(
@@ -192,11 +205,7 @@ private fun selectedName(uri: Uri): String {
             if (index >= 0 && cursor.moveToFirst()) cursor.getString(index) else null
         }
     }.getOrNull()
-    return queried
-        ?.substringAfterLast('/')
-        ?.substringAfterLast('\\')
-        ?.takeIf { it.isNotBlank() }
-        ?: "boot.img"
+    return selectedImageOutputName(queried, uri.lastPathSegment)
 }
 
 private fun replaceWithRollback(pending: File, output: File) {
@@ -295,87 +304,6 @@ private fun publishPatchedImage(source: File, displayName: String): String {
     }
 }
 
-private fun publishPatchedImagePair(
-    initBoot: File,
-    boot: File,
-): Pair<String, String> {
-    val initName = "Ethereal-init_boot.img"
-    val bootName = "Ethereal-boot.img"
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-        return publishScopedPatchedImagePair(initBoot, boot, initName, bootName)
-    }
-
-    val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-    downloads.mkdirs()
-    val nonce = System.nanoTime().toString(16)
-    val pendingInit = File(downloads, ".$initName.$nonce.pending")
-    val pendingBoot = File(downloads, ".$bootName.$nonce.pending")
-    val outputInit = File(downloads, initName)
-    val outputBoot = File(downloads, bootName)
-    if (outputInit.exists() || outputBoot.exists()) {
-        error("Downloads already contains $initName or $bootName")
-    }
-    var initPublished = false
-    var bootPublished = false
-    try {
-        initBoot.copyTo(pendingInit, overwrite = false)
-        boot.copyTo(pendingBoot, overwrite = false)
-        if (!pendingInit.renameTo(outputInit)) error("publish Downloads/$initName")
-        initPublished = true
-        if (!pendingBoot.renameTo(outputBoot)) {
-            outputInit.delete()
-            initPublished = false
-            error("publish Downloads/$bootName")
-        }
-        bootPublished = true
-        return outputInit.absolutePath to outputBoot.absolutePath
-    } catch (t: Throwable) {
-        pendingInit.delete()
-        pendingBoot.delete()
-        if (initPublished) outputInit.delete()
-        if (bootPublished) outputBoot.delete()
-        throw t
-    }
-}
-
-@RequiresApi(Build.VERSION_CODES.Q)
-private fun publishScopedPatchedImagePair(
-    initBoot: File,
-    boot: File,
-    initName: String,
-    bootName: String,
-): Pair<String, String> {
-    val resolver = etherealApp.contentResolver
-    val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-    val created = mutableListOf<Uri>()
-    fun writePending(source: File, name: String): Uri {
-        val values = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, name)
-            put(MediaStore.MediaColumns.MIME_TYPE, "application/octet-stream")
-            put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
-            put(MediaStore.MediaColumns.IS_PENDING, 1)
-        }
-        val uri = resolver.insert(collection, values) ?: error("create Downloads/$name")
-        created += uri
-        resolver.openOutputStream(uri, "w")?.use { output ->
-            source.inputStream().use { input -> input.copyTo(output) }
-        } ?: error("open output $uri")
-        return uri
-    }
-
-    try {
-        val initUri = writePending(initBoot, initName)
-        val bootUri = writePending(boot, bootName)
-        val publish = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
-        if (resolver.update(initUri, publish, null, null) <= 0) error("publish Downloads/$initName")
-        if (resolver.update(bootUri, publish, null, null) <= 0) error("publish Downloads/$bootName")
-        return "Downloads/$initName" to "Downloads/$bootName"
-    } catch (t: Throwable) {
-        created.forEach { uri -> runCatching { resolver.delete(uri, null, null) } }
-        throw t
-    }
-}
-
 fun runFlash(
     item: FlashIt,
     onFinish: (Boolean, Int) -> Unit,
@@ -433,15 +361,17 @@ private fun flashBoot(
         if (ko.isFile) args += listOf("--ko", ko.absolutePath)
     }
 
+    // Offline really means offline. Keep this branch above becomeRoot(); picking a file
+    // must never summon SuperCall or a root permission dialog.
     if (item.source !is FlashIt.BootSource.Direct) {
         if (!ethd.isFile || !ethd.canExecute()) error("Ethereal patcher is not executable")
         if (!nativeLib("libramtool.so").isFile) error("ramtool is not bundled")
 
         when (val source = item.source) {
-            is FlashIt.BootSource.Gki1File -> {
-                if (source.boot.isBlank()) error("GKI 1.0 boot image is required")
-                val inputUri = Uri.parse(source.boot)
-                line("- copy selected GKI 1.0 boot image")
+            is FlashIt.BootSource.ImageFile -> {
+                if (source.image.isBlank()) error("boot or init_boot image is required")
+                val inputUri = Uri.parse(source.image)
+                line("- copy selected boot/init_boot image")
                 copyUri(inputUri, imgIn)
                 val output = File(work, "out.img")
                 val args = mutableListOf(
@@ -458,41 +388,6 @@ private fun flashBoot(
                 if (!output.isFile || output.length() == 0L) error("patched image not written")
                 val published = publishPatchedImage(output, selectedName(inputUri))
                 line("- wrote $published")
-            }
-
-            is FlashIt.BootSource.Gki2Files -> {
-                if (source.initBoot.isBlank() || source.boot.isBlank()) {
-                    error("GKI 2.0 requires both init_boot and boot images")
-                }
-                val initUri = Uri.parse(source.initBoot)
-                val bootUri = Uri.parse(source.boot)
-                if (initUri == bootUri) error("init_boot and boot must be different files")
-                val initInput = File(work, "in-init_boot.img")
-                val bootInput = File(work, "in-boot.img")
-                val initOutput = File(work, "out-init_boot.img")
-                val bootOutput = File(work, "out-boot.img")
-                line("- copy selected GKI 2.0 init_boot + boot images")
-                copyUri(initUri, initInput)
-                copyUri(bootUri, bootInput)
-                val args = mutableListOf(
-                    ethd.absolutePath,
-                    "boot-patch-pair",
-                    "--init-boot", initInput.absolutePath,
-                    "--boot", bootInput.absolutePath,
-                    "--out-init-boot", initOutput.absolutePath,
-                    "--out-boot", bootOutput.absolutePath,
-                    "--manager-uid", managerUid.toString(),
-                    "--manager-token-file", managerToken.absolutePath,
-                )
-                addPayloadArgs(args)
-                val rc = runProcess(args, work, line)
-                if (rc != 0) error("boot-patch-pair failed $rc")
-                if (!initOutput.isFile || initOutput.length() == 0L ||
-                    !bootOutput.isFile || bootOutput.length() == 0L
-                ) error("patched image pair not written")
-                val published = publishPatchedImagePair(initOutput, bootOutput)
-                line("- wrote ${published.first}")
-                line("- wrote ${published.second}")
             }
 
             FlashIt.BootSource.Direct -> error("invalid file patch source")

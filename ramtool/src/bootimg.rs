@@ -358,8 +358,10 @@ pub fn append_rdinit(cmdline: &str) -> String {
 
 fn gki2_cmdline_with_rdinit(cmdline: &str, cap: usize) -> Result<String> {
     let mut has_ethereal_rdinit = false;
+    let mut rdinit_count = 0usize;
     for arg in cmdline.split_whitespace() {
         if arg.starts_with("rdinit=") {
+            rdinit_count += 1;
             ensure!(
                 arg == ETHEREAL_RDINIT,
                 "boot cmdline already contains conflicting {arg}; refusing to replace it"
@@ -367,6 +369,10 @@ fn gki2_cmdline_with_rdinit(cmdline: &str, cap: usize) -> Result<String> {
             has_ethereal_rdinit = true;
         }
     }
+    ensure!(
+        rdinit_count <= 1,
+        "boot cmdline contains multiple rdinit= parameters; use an unmodified stock image"
+    );
 
     let next = if has_ethereal_rdinit {
         cmdline.to_string()
@@ -1119,6 +1125,16 @@ mod tests {
         let image = kernel_only_boot(3, "console=ttyS0 rdinit=/init");
         let error = patch_gki2_boot_cmdline_bytes(&image).unwrap_err();
         assert!(error.to_string().contains("conflicting rdinit=/init"));
+    }
+
+    #[test]
+    fn gki2_cmdline_patch_rejects_duplicate_ethereal_rdinit() {
+        let image = kernel_only_boot(
+            3,
+            "rdinit=/ethereal-init console=ttyS0 rdinit=/ethereal-init",
+        );
+        let error = patch_gki2_boot_cmdline_bytes(&image).unwrap_err();
+        assert!(error.to_string().contains("multiple rdinit="));
     }
 
     #[test]

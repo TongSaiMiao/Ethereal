@@ -422,7 +422,7 @@ pub fn clear_all_temp_configs() -> Result<()> {
     let config_root = Path::new(defs::MODULE_CONFIG_DIR);
 
     if !config_root.exists() {
-        debug!("Config directory does not exist, nothing to clear");
+        debug!("Config directory does not exist, nothing to remove");
         return Ok(());
     }
 

@@ -120,7 +120,7 @@ body:
   - type: input
     attributes:
       label: Patch target | 修补目标
-      description: boot.img (GKI 1.0) or init_boot.img + boot.img (GKI 2.0), if applicable | 如适用，请填写 boot.img（GKI 1.0）或 init_boot.img + boot.img（GKI 2.0）
+      description: The single boot.img or init_boot.img selected for offline patching, if applicable | 如适用，请填写离线修补时单独选择的 boot.img 或 init_boot.img
     validations:
       required: false
 

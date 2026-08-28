@@ -1,4 +1,5 @@
 use anyhow::{bail, ensure, Result};
+use std::collections::HashSet;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -9,11 +10,16 @@ const TRAILER: &str = "TRAILER!!!";
 
 const S_IFDIR: u32 = 0o040000;
 const S_IFREG: u32 = 0o100000;
-const MAX_ENTRY_NAME: usize = 4096;
+const S_IFLNK: u32 = 0o120000;
+const S_IFMT: u32 = 0o170000;
+/// Linux initramfs counts the trailing NUL in its 4096-byte PATH_MAX check.
+const MAX_ENTRY_NAME: usize = 4095;
+const MAX_COMPONENT_NAME: usize = 255;
+const MAX_SYMLINK_TARGET: usize = 4096;
 const MAX_ENTRIES: usize = 65_536;
 const MAX_ARCHIVES: usize = 64;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
     pub name: String,
     pub ino: u32,
@@ -29,7 +35,15 @@ pub struct Entry {
 
 impl Entry {
     pub fn is_dir(&self) -> bool {
-        self.mode & S_IFDIR != 0
+        self.mode & S_IFMT == S_IFDIR
+    }
+
+    pub fn is_regular(&self) -> bool {
+        self.mode & S_IFMT == S_IFREG
+    }
+
+    pub fn is_symlink(&self) -> bool {
+        self.mode & S_IFMT == S_IFLNK
     }
 }
 
@@ -53,11 +67,11 @@ fn pad4(out: &mut Vec<u8>) {
     }
 }
 
-fn normalize(name: &str) -> String {
-    name.trim_start_matches('/').to_string()
+fn requires_directory(name: &str) -> bool {
+    name.ends_with('/') || name.rsplit('/').next() == Some(".")
 }
 
-fn validate_name(name: &str) -> Result<()> {
+fn normalize_name(name: &str) -> Result<Option<String>> {
     ensure!(!name.is_empty(), "cpio: empty entry name");
     ensure!(
         name.len() <= MAX_ENTRY_NAME,
@@ -71,11 +85,65 @@ fn validate_name(name: &str) -> Result<()> {
         !name.split('/').any(|part| part == ".."),
         "cpio: parent traversal is not allowed in entry {name:?}"
     );
-    Ok(())
+    ensure!(
+        name.split('/')
+            .filter(|part| !part.is_empty() && *part != ".")
+            .all(|part| part.len() <= MAX_COMPONENT_NAME),
+        "cpio: path component exceeds {MAX_COMPONENT_NAME} bytes in entry {name:?}"
+    );
+    let normalized = name
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect::<Vec<_>>()
+        .join("/");
+    if normalized.is_empty() {
+        return Ok(None);
+    }
+    ensure!(
+        !requires_directory(name),
+        "cpio: trailing directory syntax is not allowed in entry {name:?}"
+    );
+    ensure!(
+        normalized != TRAILER,
+        "cpio: reserved trailer name is not allowed in entry {name:?}"
+    );
+    Ok(Some(normalized))
+}
+
+fn required_name(name: &str) -> Result<String> {
+    normalize_name(name)?.ok_or_else(|| anyhow::anyhow!("cpio: root entry is not a file name"))
 }
 
 pub fn parse(data: &[u8]) -> Result<Vec<Entry>> {
-    Ok(parse_from(data, 0)?.0)
+    let entries = parse_from(data, 0)?.0;
+    validate_symlink_ancestors(std::slice::from_ref(&entries))?;
+    Ok(entries)
+}
+
+fn validate_symlink_ancestors(archives: &[Vec<Entry>]) -> Result<()> {
+    let mut symlinks = HashSet::new();
+    for entry in archives.iter().flat_map(|entries| entries.iter()) {
+        let mut prefix = String::new();
+        let parts: Vec<&str> = entry.name.split('/').collect();
+        for part in parts.iter().take(parts.len().saturating_sub(1)) {
+            if !prefix.is_empty() {
+                prefix.push('/');
+            }
+            prefix.push_str(part);
+            ensure!(
+                !symlinks.contains(&prefix),
+                "cpio: entry {:?} descends through symlink ancestor {:?}",
+                entry.name,
+                prefix
+            );
+        }
+        if entry.is_symlink() {
+            symlinks.insert(entry.name.clone());
+        } else {
+            symlinks.remove(&entry.name);
+        }
+    }
+    Ok(())
 }
 
 /// One newc archive starting at `start`. Returns entries and offset after TRAILER.
@@ -113,24 +181,32 @@ fn parse_from(data: &[u8], start: usize) -> Result<(Vec<Entry>, usize)> {
             !name_bytes[..name_bytes.len() - 1].contains(&0),
             "cpio: name contains an embedded NUL"
         );
-        let name = std::str::from_utf8(&name_bytes[..name_bytes.len() - 1])?.to_string();
+        let source_name = std::str::from_utf8(&name_bytes[..name_bytes.len() - 1])?.to_string();
         let data_off = align4(name_end);
         ensure!(data_off <= data.len(), "cpio: truncated name padding");
         let file_end = data_off
             .checked_add(filesize)
             .ok_or_else(|| anyhow::anyhow!("cpio: file range overflow"))?;
-        ensure!(file_end <= data.len(), "cpio: truncated file {name}");
+        ensure!(file_end <= data.len(), "cpio: truncated file {source_name}");
         let file_data = data[data_off..file_end].to_vec();
+        let file_type = mode & S_IFMT;
+        ensure!(
+            file_type == S_IFREG
+                || (file_type == S_IFLNK && filesize <= MAX_SYMLINK_TARGET)
+                || filesize == 0,
+            "cpio: non-regular entry has an unsupported body: {source_name:?}"
+        );
         off = align4(file_end);
-        ensure!(off <= data.len(), "cpio: truncated file padding for {name}");
-        if name == TRAILER {
+        ensure!(
+            off <= data.len(),
+            "cpio: truncated file padding for {source_name}"
+        );
+        if source_name == TRAILER {
             return Ok((entries, off));
         }
-        if name.is_empty() || name == "." {
+        let Some(name) = normalize_name(&source_name)? else {
             continue;
-        }
-        let name = normalize(&name);
-        validate_name(&name)?;
+        };
         ensure!(entries.len() < MAX_ENTRIES, "cpio: too many entries");
         entries.push(Entry {
             name,
@@ -185,6 +261,7 @@ pub fn parse_all(data: &[u8]) -> Result<Vec<Vec<Entry>>> {
     if archives.is_empty() {
         archives.push(parse(data)?);
     }
+    validate_symlink_ancestors(&archives)?;
     Ok(archives)
 }
 
@@ -194,6 +271,11 @@ pub fn serialize_all(archives: &[Vec<Entry>]) -> Vec<u8> {
         out.extend(serialize(a));
     }
     out
+}
+
+pub(crate) fn serialize_all_checked(archives: &[Vec<Entry>]) -> Result<Vec<u8>> {
+    validate_symlink_ancestors(archives)?;
+    Ok(serialize_all(archives))
 }
 
 pub fn serialize(entries: &[Entry]) -> Vec<u8> {
@@ -242,22 +324,25 @@ fn write_entry(out: &mut Vec<u8>, e: &Entry, ino: u32) {
 }
 
 fn find_mut<'a>(entries: &'a mut [Entry], name: &str) -> Option<&'a mut Entry> {
-    let n = normalize(name);
-    entries.iter_mut().find(|e| e.name == n)
+    entries.iter_mut().rev().find(|entry| entry.name == name)
 }
 
 fn find_any<'a>(archives: &'a [Vec<Entry>], name: &str) -> Option<&'a Entry> {
-    let n = normalize(name);
-    archives.iter().find_map(|a| a.iter().find(|e| e.name == n))
+    archives
+        .iter()
+        .rev()
+        .find_map(|entries| entries.iter().rev().find(|entry| entry.name == name))
 }
 
 pub fn exists(data: &[u8], name: &str) -> Result<bool> {
-    Ok(find_any(&parse_all(data)?, name).is_some())
+    let name = required_name(name)?;
+    Ok(find_any(&parse_all(data)?, &name).is_some())
 }
 
 pub fn extract_to(data: &[u8], name: &str, out: &Path) -> Result<()> {
+    let name = required_name(name)?;
     let archives = parse_all(data)?;
-    let e = find_any(&archives, name).ok_or_else(|| anyhow::anyhow!("cpio: {name} not found"))?;
+    let e = find_any(&archives, &name).ok_or_else(|| anyhow::anyhow!("cpio: {name} not found"))?;
     if let Some(parent) = out.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -270,8 +355,7 @@ pub fn add_file(data: &[u8], mode: u32, name: &str, file: &Path) -> Result<Vec<u
     if archives.is_empty() {
         archives.push(Vec::new());
     }
-    let n = normalize(name);
-    validate_name(&n)?;
+    let n = required_name(name)?;
     let blob = fs::read(file)?;
     let file_mode = S_IFREG | (mode & 0o7777);
     // Last archive wins when the bootloader concatenates ramdisks.
@@ -293,7 +377,7 @@ pub fn add_file(data: &[u8], mode: u32, name: &str, file: &Path) -> Result<Vec<u
         rdevminor: 0,
         data: blob,
     });
-    Ok(serialize_all(&archives))
+    serialize_all_checked(&archives)
 }
 
 pub fn mkdir(data: &[u8], mode: u32, name: &str) -> Result<Vec<u8>> {
@@ -301,8 +385,7 @@ pub fn mkdir(data: &[u8], mode: u32, name: &str) -> Result<Vec<u8>> {
     if archives.is_empty() {
         archives.push(Vec::new());
     }
-    let n = normalize(name);
-    validate_name(&n)?;
+    let n = required_name(name)?;
     for existing in &mut archives {
         existing.retain(|entry| entry.name != n);
     }
@@ -319,12 +402,11 @@ pub fn mkdir(data: &[u8], mode: u32, name: &str) -> Result<Vec<u8>> {
         rdevminor: 0,
         data: Vec::new(),
     });
-    Ok(serialize_all(&archives))
+    serialize_all_checked(&archives)
 }
 
 pub fn rm(data: &[u8], name: &str, recursive: bool) -> Result<Vec<u8>> {
-    let n = normalize(name);
-    validate_name(&n)?;
+    let n = required_name(name)?;
     let archives = parse_all(data)?;
     let archives: Vec<Vec<Entry>> = archives
         .into_iter()
@@ -343,17 +425,15 @@ pub fn rm(data: &[u8], name: &str, recursive: bool) -> Result<Vec<u8>> {
                 .collect()
         })
         .collect();
-    Ok(serialize_all(&archives))
+    serialize_all_checked(&archives)
 }
 
 pub fn mv(data: &[u8], from: &str, to: &str) -> Result<Vec<u8>> {
     let mut archives = parse_all(data)?;
-    let src = normalize(from);
-    let dst = normalize(to);
-    validate_name(&src)?;
-    validate_name(&dst)?;
+    let src = required_name(from)?;
+    let dst = required_name(to)?;
     let mut found = false;
-    for entries in &mut archives {
+    for entries in archives.iter_mut().rev() {
         if let Some(e) = find_mut(entries, &src) {
             e.name = dst.clone();
             found = true;
@@ -361,7 +441,7 @@ pub fn mv(data: &[u8], from: &str, to: &str) -> Result<Vec<u8>> {
         }
     }
     ensure!(found, "cpio: {from} not found");
-    Ok(serialize_all(&archives))
+    serialize_all_checked(&archives)
 }
 
 pub fn apply_command(mut archive: Vec<u8>, cmd: &str) -> Result<Vec<u8>> {
@@ -416,6 +496,10 @@ pub fn apply_command(mut archive: Vec<u8>, cmd: &str) -> Result<Vec<u8>> {
             println!("HOOKED_INITS    [{n}]");
             Ok(next)
         }
+        "restore-init-hook" => {
+            ensure!(parts.len() == 1, "usage: restore-init-hook");
+            crate::hook::restore_cpio(&archive)
+        }
         other => bail!("unknown cpio command: {other}"),
     }
 }
@@ -424,6 +508,52 @@ pub fn apply_command(mut archive: Vec<u8>, cmd: &str) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn put_u16(data: &mut [u8], offset: usize, value: u16) {
+        data[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn put_u32(data: &mut [u8], offset: usize, value: u32) {
+        data[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn put_u64(data: &mut [u8], offset: usize, value: u64) {
+        data[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn synthetic_aarch64_elf(first_stage: bool, stub: bool) -> Vec<u8> {
+        let mut data = vec![0u8; 512];
+        data[..4].copy_from_slice(b"\x7fELF");
+        data[4] = 2; // ELFCLASS64
+        data[5] = 1; // ELFDATA2LSB
+        data[6] = 1; // EV_CURRENT
+        put_u16(&mut data, 16, 3); // ET_DYN
+        put_u16(&mut data, 18, 183); // EM_AARCH64
+        put_u32(&mut data, 20, 1);
+        put_u64(&mut data, 24, 0x100);
+        put_u64(&mut data, 32, 64);
+        put_u16(&mut data, 52, 64);
+        put_u16(&mut data, 54, 56);
+        put_u16(&mut data, 56, 1);
+
+        let phdr = 64;
+        put_u32(&mut data, phdr, 1); // PT_LOAD
+        put_u32(&mut data, phdr + 4, 5); // PF_R | PF_X
+        let data_len = data.len() as u64;
+        put_u64(&mut data, phdr + 32, data_len);
+        put_u64(&mut data, phdr + 40, data_len);
+        put_u64(&mut data, phdr + 48, 0x1000);
+
+        if first_stage {
+            let landmark = b"init first stage started!";
+            data[320..320 + landmark.len()].copy_from_slice(landmark);
+        }
+        if stub {
+            put_u64(&mut data, 384, crate::elfpatch::MAGIC_ORIG_ENTRY);
+            put_u64(&mut data, 392, crate::elfpatch::MAGIC_STUB_VADDR);
+        }
+        data
+    }
 
     fn entry(name: &str, data: &[u8]) -> Entry {
         Entry {
@@ -440,6 +570,12 @@ mod tests {
         }
     }
 
+    fn symlink(name: &str, target: &str) -> Entry {
+        let mut entry = entry(name, target.as_bytes());
+        entry.mode = S_IFLNK | 0o777;
+        entry
+    }
+
     #[test]
     fn rejects_missing_trailer_and_parent_traversal() {
         assert!(parse(&[])
@@ -451,14 +587,38 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("parent traversal"));
+
+        for name in ["init/", "init/.", "./TRAILER!!!"] {
+            let archive = serialize(&[entry(name, b"ambiguous")]);
+            assert!(parse(&archive).unwrap_err().to_string().contains(
+                if name.contains("TRAILER") {
+                    "reserved trailer"
+                } else {
+                    "trailing directory syntax"
+                }
+            ));
+        }
+
+        let mut directory = entry("system//./", b"");
+        directory.mode = S_IFDIR | 0o755;
+        assert!(parse(&serialize(&[directory])).is_err());
+
+        let max_name = format!("/{}init", "./".repeat(2045));
+        assert_eq!(max_name.len(), MAX_ENTRY_NAME);
+        assert!(parse(&serialize(&[entry(&max_name, b"ok")])).is_ok());
+        let skipped_by_linux = format!("{}init", "./".repeat(2046));
+        assert_eq!(skipped_by_linux.len(), MAX_ENTRY_NAME + 1);
+        assert!(parse(&serialize(&[entry(&skipped_by_linux, b"too long")])).is_err());
+        let long_component = format!("{}/init", "a".repeat(MAX_COMPONENT_NAME + 1));
+        assert!(parse(&serialize(&[entry(&long_component, b"too wide")])).is_err());
     }
 
     #[test]
     fn add_replaces_all_duplicate_entries_with_one_final_regular_file() {
         let archive = serialize_all(&[
-            vec![entry("ethereal.manager_token", b"first")],
+            vec![entry("./ethereal.manager_token", b"first")],
             vec![
-                entry("ethereal.manager_token", b"second"),
+                entry("//ethereal.manager_token", b"second"),
                 entry("ethereal.manager_token", b"last"),
             ],
         ]);
@@ -484,5 +644,178 @@ mod tests {
         assert_eq!(matching[0].mode, S_IFREG | 0o400);
 
         fs::remove_file(source).unwrap();
+    }
+
+    #[test]
+    fn path_aliases_resolve_to_the_last_extracted_entry() {
+        let archive = serialize_all(&[vec![entry("init", b"old")], vec![entry("./init", b"new")]]);
+        let parsed = parse_all(&archive).unwrap();
+        assert_eq!(parsed[0][0].name, "init");
+        assert_eq!(parsed[1][0].name, "init");
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let output = std::env::temp_dir().join(format!(
+            "ethereal-cpio-extract-{}-{nonce}",
+            std::process::id()
+        ));
+        extract_to(&archive, "/./init", &output).unwrap();
+        assert_eq!(fs::read(&output).unwrap(), b"new");
+        fs::remove_file(output).unwrap();
+    }
+
+    #[test]
+    fn rejects_entries_that_descend_through_a_live_symlink() {
+        let archive = serialize(&[
+            entry("init", b"older root init"),
+            symlink("x", "/"),
+            entry("x/init", b"would overwrite root init"),
+        ]);
+        let error = parse_all(&archive).unwrap_err();
+        assert!(error.to_string().contains("symlink ancestor"));
+
+        let mut real_directory = entry("x", b"");
+        real_directory.mode = S_IFDIR | 0o755;
+        let replaced = serialize(&[
+            symlink("x", "/"),
+            real_directory,
+            entry("x/child", b"ordinary child"),
+        ]);
+        assert!(parse_all(&replaced).is_ok());
+        assert!(mv(&replaced, "x", "y").is_err());
+
+        let mut skipped_directory = entry("x", b"Linux skips this malformed directory");
+        skipped_directory.mode = S_IFDIR | 0o755;
+        let fake_replacement = serialize(&[
+            entry("init", b"older root init"),
+            symlink("x", "/"),
+            skipped_directory,
+            entry("x/init", b"would overwrite root init"),
+        ]);
+        assert!(parse_all(&fake_replacement)
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported body"));
+
+        let oversized_target = "a".repeat(MAX_SYMLINK_TARGET + 1);
+        assert!(parse(&serialize(&[symlink("long-link", &oversized_target)])).is_err());
+    }
+
+    #[test]
+    fn cpio_commands_share_the_same_terminal_path_rules() {
+        let archive = serialize(&[entry("init", b"stock")]);
+        assert!(exists(&archive, "init/").is_err());
+        assert!(rm(&archive, "init/.", false).is_err());
+        assert!(mkdir(&archive, 0o755, "system/").is_err());
+        assert!(mv(&archive, "init", "./TRAILER!!!").is_err());
+        assert!(add_file(&archive, 0o600, "init/", Path::new("unused-missing-input")).is_err());
+    }
+
+    #[test]
+    fn hook_targets_only_the_effective_root_init_and_repatches_from_backup() {
+        let older_root = entry("init", b"older concatenated root init");
+        let mut effective_root = entry("init", &synthetic_aarch64_elf(true, false));
+        effective_root.mode = S_IFREG | 0o750;
+        effective_root.uid = 123;
+        effective_root.gid = 456;
+        effective_root.mtime = 789;
+        let lookalike = entry("system/bin/init", &synthetic_aarch64_elf(true, false));
+        let archive = serialize_all(&[
+            vec![older_root.clone()],
+            vec![lookalike.clone(), effective_root.clone()],
+        ]);
+        let stub = synthetic_aarch64_elf(false, true);
+
+        let (patched, count) = crate::hook::hook_cpio(&archive, &stub).unwrap();
+        assert_eq!(count, 1);
+        let parsed = parse_all(&patched).unwrap();
+        assert_eq!(parsed[0][0], older_root);
+        assert_eq!(parsed[1][0], lookalike);
+
+        let patched_root = parsed[1].iter().find(|entry| entry.name == "init").unwrap();
+        assert!(crate::elfpatch::is_patched(&patched_root.data));
+        assert_eq!(patched_root.mode, effective_root.mode);
+        assert_eq!(patched_root.uid, effective_root.uid);
+        assert_eq!(patched_root.gid, effective_root.gid);
+        assert_eq!(patched_root.mtime, effective_root.mtime);
+
+        let backup = parsed[1]
+            .iter()
+            .find(|entry| entry.name == "init.ethereal.bak")
+            .unwrap();
+        let mut expected_backup = effective_root.clone();
+        expected_backup.name = "init.ethereal.bak".to_string();
+        expected_backup.ino = backup.ino;
+        expected_backup.nlink = 1;
+        assert_eq!(*backup, expected_backup);
+        assert_ne!(backup.ino, patched_root.ino);
+
+        let (repatched, count) = crate::hook::hook_cpio(&patched, &stub).unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(repatched, patched);
+        let restored = crate::hook::restore_cpio(&repatched).unwrap();
+        assert_eq!(restored, archive);
+    }
+
+    #[test]
+    fn hook_failure_does_not_fall_back_to_non_root_init() {
+        let root = entry("init", &synthetic_aarch64_elf(false, false));
+        let lookalike = entry("system/bin/init", &synthetic_aarch64_elf(true, false));
+        let archive = serialize(&[root, lookalike]);
+        let stub = synthetic_aarch64_elf(false, true);
+
+        let error = crate::hook::hook_cpio(&archive, &stub).unwrap_err();
+        assert!(error.to_string().contains("refusing to patch"));
+        assert!(!archive
+            .windows(crate::elfpatch::PATCH_MARKER.len())
+            .any(|window| window == crate::elfpatch::PATCH_MARKER));
+        assert!(!exists(&archive, "init.ethereal.bak").unwrap());
+    }
+
+    #[test]
+    fn hook_treats_dot_prefixed_init_as_the_effective_root() {
+        let older_root = entry("init", &synthetic_aarch64_elf(true, false));
+        let effective_root = entry("./init", &synthetic_aarch64_elf(true, false));
+        let archive = serialize_all(&[vec![older_root.clone()], vec![effective_root.clone()]]);
+        let stub = synthetic_aarch64_elf(false, true);
+
+        let (patched, count) = crate::hook::hook_cpio(&archive, &stub).unwrap();
+        assert_eq!(count, 1);
+        let parsed = parse_all(&patched).unwrap();
+        assert!(!crate::elfpatch::is_patched(&parsed[0][0].data));
+        assert!(crate::elfpatch::is_patched(&parsed[1][0].data));
+
+        let restored = parse_all(&crate::hook::restore_cpio(&patched).unwrap()).unwrap();
+        assert_eq!(restored[0][0].data, older_root.data);
+        assert_eq!(restored[1][0].data, effective_root.data);
+        assert!(!restored[1]
+            .iter()
+            .any(|entry| entry.name == "init.ethereal.bak"));
+    }
+
+    #[test]
+    fn hook_rejects_a_hard_linked_root_init() {
+        let mut root = entry("init", &synthetic_aarch64_elf(true, false));
+        root.nlink = 2;
+        let archive = serialize(&[root]);
+        let stub = synthetic_aarch64_elf(false, true);
+
+        let error = crate::hook::hook_cpio(&archive, &stub).unwrap_err();
+        assert!(error.to_string().contains("hard-linked"));
+        assert!(!exists(&archive, "init.ethereal.bak").unwrap());
+    }
+
+    #[test]
+    fn hook_rejects_hardlinks_elsewhere_in_the_ramdisk() {
+        let root = entry("init", &synthetic_aarch64_elf(true, false));
+        let mut linked = entry("other", b"shared inode");
+        linked.nlink = 2;
+        let archive = serialize(&[root, linked]);
+        let stub = synthetic_aarch64_elf(false, true);
+
+        let error = crate::hook::hook_cpio(&archive, &stub).unwrap_err();
+        assert!(error.to_string().contains("hard-linked non-directory"));
     }
 }

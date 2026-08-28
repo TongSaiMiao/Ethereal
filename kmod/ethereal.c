@@ -647,7 +647,8 @@ static long __nocfi do_su(uid_t to_uid)
 static void __nocfi cache_ramdisk_su(void)
 {
 	static const char *const srcs[] = {
-		"/eth/su", "/debug_ramdisk/su", "/su", NULL
+		/* Shared su paths may already have an owner. Our private copy goes first. */
+		"/ethereal-su", "/eth/su", "/debug_ramdisk/su", "/su", NULL
 	};
 	struct file *f;
 	loff_t pos, size;

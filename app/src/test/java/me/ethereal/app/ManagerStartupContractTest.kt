@@ -174,12 +174,24 @@ class ManagerStartupContractTest {
     @Test
     fun selectedBootImagesPatchWithoutExistingRoot() {
         val bootFlash = source("src/main/java/me/ethereal/app/util/BootFlash.kt")
-        val filePatch = bootFlash
-            .substringAfter("if (item.source !is FlashIt.BootSource.Direct)")
-            .substringBefore("if (!becomeRoot()) error(\"SuperCall root required to flash a partition\")")
+        val flashBoot = bootFlash
+            .substringAfter("private fun flashBoot(")
+            .substringBefore("fun isKoFile(uri: Uri)")
+        val offlineGate = flashBoot.indexOf("if (item.source !is FlashIt.BootSource.Direct)")
+        val process = flashBoot.indexOf("runProcess(args, work, line)", offlineGate)
+        val offlineReturn = flashBoot.indexOf("return", process)
+        val privilegedGate = flashBoot.indexOf(
+            "if (!becomeRoot()) error(\"SuperCall root required to flash a partition\")",
+            offlineReturn,
+        )
+        assertTrue(offlineGate >= 0 && process > offlineGate)
+        assertTrue(offlineReturn > process && privilegedGate > offlineReturn)
+        assertFalse(flashBoot.substring(offlineGate, offlineReturn).contains("runSh("))
 
-        assertTrue(filePatch.contains("runProcess(args, work, line)"))
-        assertFalse(filePatch.contains("becomeRoot()"))
+        val runProcess = bootFlash
+            .substringAfter("private fun runProcess(")
+            .substringBefore("internal fun selectedImageOutputName(")
+        assertFalse(runProcess.contains("becomeRoot()"))
 
         val install = source("src/main/java/me/ethereal/app/ui/screen/BootInstall.kt")
         val options = install
@@ -192,13 +204,16 @@ class ManagerStartupContractTest {
     }
 
     @Test
-    fun bootImagePickerSurvivesActivityRecreation() {
+    fun singleBootImagePickerSurvivesActivityRecreation() {
         val install = source("src/main/java/me/ethereal/app/ui/screen/BootInstall.kt")
 
         assertTrue(install.contains("rememberSaveable { mutableStateOf<InstallMethod?>(null) }"))
         assertTrue(install.windowed("ActivityResultContracts.OpenDocument()".length)
-            .count { it == "ActivityResultContracts.OpenDocument()" } >= 2)
+            .count { it == "ActivityResultContracts.OpenDocument()" } == 1)
         assertTrue(install.contains("takePersistableUriPermission("))
+        assertTrue(install.contains("val imageUri: String? = null"))
+        assertFalse(install.contains("val bootUri:"))
+        assertFalse(install.contains("val initBootUri:"))
         assertFalse(install.contains("selectingImage"))
     }
 

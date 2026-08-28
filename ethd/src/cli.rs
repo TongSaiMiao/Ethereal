@@ -46,9 +46,9 @@ enum Commands {
     /// MagiskPolicy - SELinux Policy Patch Tool
     Sepolicy(crate::sepolicy::Args),
 
-    /// Patch a GKI 1.0 boot image containing both kernel and ramdisk
+    /// Patch one GKI 1.0 boot or GKI 2.0 init_boot image
     BootPatch {
-        /// Input GKI 1.0 boot image
+        /// Input image; kernel-only boot and vendor_boot images are rejected
         #[arg(long)]
         image: PathBuf,
         /// Output image path
@@ -66,9 +66,6 @@ enum Commands {
         /// Internal manager authentication; supplied by the Ethereal app
         #[arg(long, hide = true)]
         manager_token_file: PathBuf,
-        /// Skip first-stage init landmark check
-        #[arg(long)]
-        skip_symbol_check: bool,
     },
 
     /// Patch a GKI 2.0 init_boot and kernel-only boot as one transaction
@@ -97,9 +94,6 @@ enum Commands {
         /// Internal manager authentication; supplied by the Ethereal app
         #[arg(long, hide = true)]
         manager_token_file: PathBuf,
-        /// Skip first-stage init landmark check
-        #[arg(long)]
-        skip_symbol_check: bool,
     },
 
     /// Restore stock init from a ramtool-patched image
@@ -388,7 +382,6 @@ pub fn run() -> Result<()> {
             ko,
             manager_uid,
             manager_token_file,
-            skip_symbol_check,
         } => ramdisk_patch::boot_patch(ramdisk_patch::PatchArgs {
             image,
             out,
@@ -396,7 +389,6 @@ pub fn run() -> Result<()> {
             ko,
             manager_uid,
             manager_token_file,
-            skip_symbol_check,
         }),
 
         Commands::BootPatchPair {
@@ -408,7 +400,6 @@ pub fn run() -> Result<()> {
             ko,
             manager_uid,
             manager_token_file,
-            skip_symbol_check,
         } => ramdisk_patch::boot_patch_pair(ramdisk_patch::PairPatchArgs {
             init_boot,
             boot,
@@ -418,7 +409,6 @@ pub fn run() -> Result<()> {
             ko,
             manager_uid,
             manager_token_file,
-            skip_symbol_check,
         }),
 
         Commands::BootUnpatch { image, out } => ramdisk_patch::boot_unpatch(image, out),

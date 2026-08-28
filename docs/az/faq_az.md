@@ -7,9 +7,9 @@ Ethereal ARM64 GKI 1.0 və GKI 2.0 üçün nüvə modulu əsaslı root həllidir
 ## Açılış imici yaması nəyi dəyişir?
 
 - GKI 1.0: `ethereal-init`, KO-lar və digər açılış faylları `boot.img` ramdiskinə əlavə olunur; həmin `boot.img` cmdline sətrinə `rdinit=/ethereal-init` yazılır.
-- GKI 2.0: fayllar `init_boot.img` ramdiskinə, `rdinit=/ethereal-init` isə uyğun `boot.img` cmdline sətrinə əlavə olunur. Buna görə iki imic birlikdə yamanmalıdır.
+- GKI 2.0 oflayn yaması: yalnız bir `init_boot.img` seçilir. Fayllar ona əlavə edilir, orijinal `/init` `init.ethereal.bak` kimi saxlanılır və əlavə `PT_LOAD` ELF girişini Ethereal yükləyicisinə yönəldir. Uyğun `boot.img` və onun cmdline sətri dəyişmir. Yalnız nüvə olan GKI 2.0 `boot.img` tək hədəf kimi rədd edilir. Direct Install yenə `init_boot` və `boot` bölmələrini bir tranzaksiya kimi birlikdə yamayır.
 
-Nüvə əvvəlcə `/ethereal-init` proqramını başladır. O, işləyən nüvənin release dəyərinə dəqiq uyğun KMI modulunu seçir, `finit_module()` ilə yükləyir və sonra orijinal `/init` faylını işə salır. Ethereal `/init` faylını əvəz etmir və onun ELF giriş nöqtəsini dəyişmir.
+GKI 1.0 və Direct Install `/ethereal-init` proqramını `rdinit` vasitəsilə başladır. Oflayn GKI 2.0 yolu orijinal `/init` daxilinə əlavə edilmiş yükləyiciyə keçir, dəqiq KMI modulunu `finit_module()` ilə yükləyir və sonra ilkin ELF girişinə qayıdır. Orijinal fayl əvəz edilmir; yama ləğv ediləndə `init.ethereal.bak` bərpa olunur.
 
 ## Niyə bütün nüvələr üçün bir universal KO yoxdur?
 

@@ -7,9 +7,9 @@ Ethereal ist eine Kernelmodul-basierte Root-Lösung für ARM64 GKI 1.0 und GKI 2
 ## Was ändert der Boot-Image-Patch?
 
 - GKI 1.0: `ethereal-init`, die KOs und die übrige Boot-Nutzlast werden der Ramdisk von `boot.img` hinzugefügt. `rdinit=/ethereal-init` wird in die Cmdline desselben `boot.img` eingetragen.
-- GKI 2.0: Die Nutzlast wird der Ramdisk von `init_boot.img` hinzugefügt, während `rdinit=/ethereal-init` in die Cmdline des zugehörigen `boot.img` kommt. Beide Images müssen daher gemeinsam gepatcht werden.
+- GKI-2.0-Offline-Patch: Es wird nur eine `init_boot.img` ausgewählt. Die Nutzlast wird dort hinzugefügt, das originale `/init` als `init.ethereal.bak` gesichert und sein ELF-Einstieg über ein zusätzliches `PT_LOAD` zum Ethereal-Loader umgeleitet. Das zugehörige `boot.img` und dessen Cmdline bleiben unverändert. Ein reines GKI-2.0-Kernel-`boot.img` wird als Einzelziel abgelehnt. Direct Install patcht `init_boot` und `boot` weiterhin gemeinsam als eine Transaktion.
 
-Der Kernel startet zunächst `/ethereal-init`. Es wählt anhand des Kernel-Release das exakt passende KMI-Modul, lädt es mit `finit_module()` und startet danach das originale `/init`. Ethereal ersetzt `/init` nicht und ändert auch dessen ELF-Einstiegspunkt nicht.
+GKI 1.0 und Direct Install starten `/ethereal-init` über `rdinit`. Der Offline-Pfad für GKI 2.0 betritt den in das originale `/init` injizierten Loader, lädt das exakt passende KMI-Modul mit `finit_module()` und springt anschließend zum ursprünglichen ELF-Einstieg zurück. Die Originaldatei wird nicht ersetzt; beim Entfernen des Patches wird sie aus `init.ethereal.bak` wiederhergestellt.
 
 ## Warum gibt es kein universelles KO für alle Kernel?
 

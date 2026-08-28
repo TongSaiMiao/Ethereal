@@ -7,9 +7,9 @@ Ethereal es una solución de root basada en un módulo del kernel para ARM64 GKI
 ## ¿Qué cambia el parche de la imagen de arranque?
 
 - GKI 1.0: `ethereal-init`, los KO y el resto de la carga se añaden a la ramdisk de `boot.img`; `rdinit=/ethereal-init` se añade a la cmdline de ese mismo `boot.img`.
-- GKI 2.0: la carga se añade a la ramdisk de `init_boot.img`, mientras que `rdinit=/ethereal-init` se añade a la cmdline del `boot.img` correspondiente. Por tanto, ambas imágenes deben parchearse como un par.
+- Parche sin conexión de GKI 2.0: se selecciona un solo `init_boot.img`. La carga se añade allí, el `/init` original se guarda como `init.ethereal.bak` y un `PT_LOAD` adicional redirige su entrada ELF mediante el cargador de Ethereal. El `boot.img` correspondiente y su cmdline no cambian. Un `boot.img` de GKI 2.0 que solo contiene el kernel se rechaza como objetivo independiente. Direct Install sigue parcheando `init_boot` y `boot` juntos en una sola transacción.
 
-El kernel inicia `/ethereal-init`. Este selecciona el módulo KMI que coincide exactamente con la versión del kernel en ejecución, lo carga mediante `finit_module()` y después ejecuta el `/init` original. Ethereal no sustituye `/init` ni cambia su punto de entrada ELF.
+GKI 1.0 y Direct Install inician `/ethereal-init` mediante `rdinit`. La ruta sin conexión de GKI 2.0 entra en el cargador inyectado en el `/init` original, carga el módulo KMI exacto con `finit_module()` y luego salta a la entrada ELF original. El archivo original no se sustituye; al quitar el parche se restaura desde `init.ethereal.bak`.
 
 ## ¿Por qué no existe un único KO universal?
 

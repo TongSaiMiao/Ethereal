@@ -28,8 +28,6 @@ typedef unsigned char u8;
 #define SYS_READ 63
 #define SYS_WRITE 64
 #define SYS_FINIT_MODULE 273
-#define O_CREAT 64
-#define O_TRUNC 512
 #define O_DIRECTORY 65536
 #define DT_REG 8
 #define SYS_EXECVE 221
@@ -401,51 +399,24 @@ struct linux_dirent64 {
 	char d_name[];
 };
 
-static int copy_file(const char *src, const char *dst)
-{
-	char buf[512];
-	long in, out, n;
-
-	in = sys_open(src, O_RDONLY);
-	if (is_err_open(in))
-		return 0;
-	out = sys6(SYS_OPENAT, AT_FDCWD, (long)dst, O_WRONLY | O_CREAT | O_TRUNC,
-		   0755, 0, 0);
-	if (is_err_open(out)) {
-		sys6(SYS_CLOSE, in, 0, 0, 0, 0, 0);
-		return 0;
-	}
-	for (;;) {
-		n = sys6(SYS_READ, in, (long)buf, sizeof(buf), 0, 0, 0);
-		if (is_err(n) || n == 0)
-			break;
-		sys6(SYS_WRITE, out, (long)buf, n, 0, 0, 0);
-	}
-	sys6(SYS_CLOSE, in, 0, 0, 0, 0, 0);
-	sys6(SYS_CLOSE, out, 0, 0, 0, 0, 0);
-	return 1;
-}
-
 static void stage_su(struct ctx *c)
 {
-	sys6(SYS_MKDIRAT, AT_FDCWD, (long)"/eth", 0755, 0, 0, 0);
-	sys6(SYS_MKDIRAT, AT_FDCWD, (long)"/debug_ramdisk", 0755, 0, 0, 0);
+	/* Shared su paths belong to whoever got there first. The module has already
+	 * cached the bytes by now, so all we need here is a breadcrumb in kmsg. */
+	if (file_ok("/ethereal-su")) {
+		klog(c, "su /ethereal-su");
+		return;
+	}
 	if (file_ok("/eth/su")) {
 		klog(c, "su /eth/su");
-		if (!file_ok("/debug_ramdisk/su"))
-			copy_file("/eth/su", "/debug_ramdisk/su");
 		return;
 	}
 	if (file_ok("/debug_ramdisk/su")) {
 		klog(c, "su /debug_ramdisk/su");
-		copy_file("/debug_ramdisk/su", "/eth/su");
 		return;
 	}
-	if (file_ok("/su")) {
-		copy_file("/su", "/eth/su");
-		copy_file("/su", "/debug_ramdisk/su");
-		klog(c, "su staged from /su");
-	}
+	if (file_ok("/su"))
+		klog(c, "su /su");
 }
 
 static int name_is_ko(const char *n)
@@ -603,8 +574,8 @@ static void exec_oem_init(unsigned long orig_sp)
 {
 	static const char path[] = "/init";
 	static const char path2[] = "/system/bin/init";
-	static char *av[2];
-	static char *ev[1];
+	char *av[2];
+	char *ev[1];
 	long argc = 0;
 	char **argv = av;
 	char **envp = ev;

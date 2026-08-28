@@ -23,6 +23,20 @@ class BootFlashPolicyTest {
     }
 
     @Test
+    fun `image output name never guesses boot when provider metadata is missing`() {
+        assertEquals(
+            "init_boot.img",
+            selectedImageOutputName("folder/init_boot.img", "ignored/boot.img"),
+        )
+        assertEquals(
+            "init_boot.img",
+            selectedImageOutputName(null, "primary:Download/init_boot.img"),
+        )
+        assertEquals("selected-image.img", selectedImageOutputName(null, "image:395"))
+        assertEquals("selected-image.img", selectedImageOutputName(null, null))
+    }
+
+    @Test
     fun `legacy publication replaces only after staging completes`() {
         val dir = Files.createTempDirectory("ethereal-publish-test").toFile()
         try {

@@ -90,9 +90,8 @@
     <string name="mode_select_page_patch_and_install">修補並安裝</string>
     <string name="mode_select_page_install_inactive_slot">安裝到非活動插槽（OTA 之後）</string>
     <string name="mode_select_page_select_file">選擇要修補的「boot image」</string>
-    <string name="select_pair_tip">請選擇同一組 init_boot 與 boot 映像檔</string>
-    <string name="select_init_boot_image">選擇 init_boot 映像檔</string>
-    <string name="select_boot_image">選擇 boot 映像檔</string>
+    <string name="select_boot_or_init_boot_image">選擇 boot 或 init_boot 映像檔</string>
+    <string name="select_single_image_tip">每次選擇一個 boot 或 init_boot 映像檔</string>
     <string name="file_not_selected">尚未選擇</string>
     <string name="enable_web_debugging">啟用 WebView 偵錯</string>
     <string name="home_more_menu_feedback_or_suggestion">回饋或建議</string>

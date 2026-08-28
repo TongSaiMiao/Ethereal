@@ -7,9 +7,9 @@ Ethereal е root решение с ядрен модул за ARM64 GKI 1.0 и G
 ## Какво променя пачът на стартовия образ?
 
 - GKI 1.0: `ethereal-init`, KO файловете и останалият payload се добавят в ramdisk на `boot.img`; `rdinit=/ethereal-init` се добавя в cmdline на същия `boot.img`.
-- GKI 2.0: payload-ът се добавя в ramdisk на `init_boot.img`, а `rdinit=/ethereal-init` - в cmdline на съответния `boot.img`. Двата образа трябва да се пачнат като двойка.
+- Офлайн пач за GKI 2.0: избира се само един `init_boot.img`. Payload-ът се добавя в него, оригиналният `/init` се запазва като `init.ethereal.bak`, а допълнителен `PT_LOAD` пренасочва ELF входната точка през Ethereal loader-а. Съответният `boot.img` и неговият cmdline не се променят. GKI 2.0 `boot.img`, съдържащ само ядро, се отхвърля като самостоятелна цел. Direct Install продължава да пачва `init_boot` и `boot` заедно като една транзакция.
 
-Ядрото стартира `/ethereal-init`. Той избира точния KMI модул според release версията на работещото ядро, зарежда го чрез `finit_module()` и след това стартира оригиналния `/init`. Ethereal не заменя `/init` и не променя неговата ELF входна точка.
+GKI 1.0 и Direct Install стартират `/ethereal-init` чрез `rdinit`. Офлайн пътят за GKI 2.0 влиза в loader-а, добавен към оригиналния `/init`, зарежда точния KMI модул чрез `finit_module()` и след това прескача към оригиналната ELF входна точка. Оригиналният файл не се заменя, а премахването на пача го възстановява от `init.ethereal.bak`.
 
 ## Защо няма един универсален KO?
 

@@ -232,6 +232,10 @@ SOURCE_DATE_EPOCH=0 "${ARM64_CC[@]}" -static -O2 -s "${ARM64_LD_FLAGS[@]}" \
   "-DETHEREAL_EXPECTED_KMI=\"$KMI\"" \
   -o "$ROOTFS/init" "$ROOT/tests/gki1-boot-patch-e2e-init.c"
 chmod 0755 "$ROOTFS/init"
+mkdir -p "$ROOTFS/eth" "$ROOTFS/debug_ramdisk"
+printf '%s\n' stock-root-su > "$ROOTFS/su"
+printf '%s\n' stock-eth-su > "$ROOTFS/eth/su"
+printf '%s\n' stock-debug-su > "$ROOTFS/debug_ramdisk/su"
 touch -d @0 "$ROOTFS" "$ROOTFS/init"
 (
   cd "$ROOTFS"
@@ -410,7 +414,7 @@ cpio_exists() {
   "$RAMTOOL" cpio "$UNPACKED/ramdisk.cpio" "exists $1"
 }
 
-for entry in init ethereal-init ethereal.manager_uid ethereal.manager_token eth/su; do
+for entry in init ethereal-init ethereal.manager_uid ethereal.manager_token ethereal.patch_state ethereal-su; do
   cpio_exists "$entry"
 done
 for bundled_kmi in "${REQUIRED_KMIS[@]}"; do
@@ -431,12 +435,19 @@ fi
   "extract ethereal.$KMI.ko $UNPACKED/ethereal.$KMI.ko.extracted" \
   "extract ethereal.manager_uid $UNPACKED/manager-uid.extracted" \
   "extract ethereal.manager_token $UNPACKED/manager-token.extracted" \
-  "extract eth/su $UNPACKED/su.extracted"
+  "extract ethereal.patch_state $UNPACKED/patch-state.extracted" \
+  "extract ethereal-su $UNPACKED/su.extracted"
 cmp -s "$ROOTFS/init" "$UNPACKED/init.extracted"
 cmp -s "$ETHINIT" "$UNPACKED/ethereal-init.extracted"
 cmp -s "$KO" "$UNPACKED/ethereal.$KMI.ko.extracted"
 cmp -s "$MANAGER_TOKEN_FILE" "$UNPACKED/manager-token.extracted"
+grep -qx 'mode=gki1-single' "$UNPACKED/patch-state.extracted"
 cmp -s "$SU" "$UNPACKED/su.extracted"
+for entry in su eth/su debug_ramdisk/su; do
+  extracted="$UNPACKED/preserved-${entry//\//-}"
+  "$RAMTOOL" cpio "$UNPACKED/ramdisk.cpio" "extract $entry $extracted"
+  cmp -s "$ROOTFS/$entry" "$extracted"
+done
 test "$(cat "$UNPACKED/manager-uid.extracted")" = 2000
 cpio -itv < "$UNPACKED/ramdisk.cpio" 2>/dev/null | \
   awk '$NF == "ethereal.manager_uid" { print $1 }' | grep -qx -- '-r--------'
@@ -482,6 +493,7 @@ require_serial_marker "ethereal-stub: osrelease=$OFFICIAL_RELEASE"
 require_serial_marker "ethereal-stub: kmi=$KMI"
 require_serial_marker "ethereal-stub: finit /ethereal.$KMI.ko"
 require_serial_marker "ethereal-stub: loaded /ethereal.$KMI.ko"
+require_serial_marker ' from /ethereal-su'
 require_serial_marker 'ethereal: ready'
 require_serial_marker 'ethereal-gki1-e2e: OEM init handoff OK'
 require_serial_marker "ethereal-gki1-e2e: exact KMI $KMI KO load OK"

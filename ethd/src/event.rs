@@ -23,6 +23,8 @@ use crate::{
     utils::{self, switch_cgroups},
 };
 
+const ETHEREAL_SU_PATH: &str = "/dev/.ethereal/su";
+
 pub fn report_kernel(event: &str, state: &str) {
     let args = [
         "su".to_string(),
@@ -31,9 +33,9 @@ pub fn report_kernel(event: &str, state: &str) {
         state.to_string(),
     ];
     let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    // Best-effort notification to the kernel; a failed report must not abort
-    // boot stages such as post-fs-data.
-    if let Err(e) = utils::run_command("/eth/su", &args_ref, None)
+    // Shared su paths make poor message buses: they may belong to another root
+    // implementation. A failed private-path report still must not abort boot.
+    if let Err(e) = utils::run_command(ETHEREAL_SU_PATH, &args_ref, None)
         .and_then(|mut child| child.wait().map_err(anyhow::Error::from))
     {
         warn!("report kernel event {event}/{state} failed: {e}");

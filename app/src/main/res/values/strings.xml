@@ -64,7 +64,7 @@
 
     <string name="home_not_installed">Not installed</string>
     <string name="home_install_unknown">Root is unavailable</string>
-    <string name="home_install_unknown_summary">The kernel Image is never rewritten. GKI 2.0 writes init_boot (ethereal-init + ethereal.ko) and only the rdinit cmdline field in boot. Never flash init_boot onto boot.</string>
+    <string name="home_install_unknown_summary">The kernel Image is never rewritten. Offline patching uses one boot image on GKI 1.0 or one init_boot image on GKI 2.0. Never flash init_boot onto boot.</string>
     <string name="home_click_to_install">Click to install</string>
     <string name="home_working">Working</string>
     <string name="home_working_version">Version: %s</string>
@@ -169,9 +169,8 @@
     <string name="install_upload_lkm_file">Use local LKM file</string>
     <string name="install_only_support_ko_file">Only .ko files are supported</string>
     <string name="select_file_tip">%1$s partition image is recommended</string>
-    <string name="select_pair_tip">Select the matching init_boot and boot images</string>
-    <string name="select_init_boot_image">Select init_boot image</string>
-    <string name="select_boot_image">Select boot image</string>
+    <string name="select_boot_or_init_boot_image">Select a boot or init_boot image</string>
+    <string name="select_single_image_tip">Select one boot or init_boot image at a time</string>
     <string name="file_not_selected">Not selected</string>
     <string name="selected_lkm">Selected LKM: %s</string>
     <string name="horizon_kernel">Install Anykernel3</string>

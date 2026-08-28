@@ -7,9 +7,9 @@ Ethereal, ARM64 GKI 1.0 ve GKI 2.0 için kernel modülü tabanlı bir root çöz
 ## Açılış imajı yaması neyi değiştirir?
 
 - GKI 1.0: `ethereal-init`, KO dosyaları ve diğer açılış içeriği `boot.img` ramdiskine eklenir; aynı `boot.img` cmdline alanına `rdinit=/ethereal-init` eklenir.
-- GKI 2.0: içerik `init_boot.img` ramdiskine, `rdinit=/ethereal-init` ise eşleşen `boot.img` cmdline alanına eklenir. Bu nedenle iki imaj birlikte yamalanmalıdır.
+- GKI 2.0 çevrimdışı yaması: yalnızca bir `init_boot.img` seçilir. İçerik buraya eklenir, stok `/init` `init.ethereal.bak` olarak saklanır ve ek bir `PT_LOAD` ELF girişini Ethereal yükleyicisine yönlendirir. Eşleşen `boot.img` ve cmdline alanı değişmez. Yalnızca kernel içeren GKI 2.0 `boot.img` tek başına hedef olarak reddedilir. Direct Install, `init_boot` ve `boot` bölümlerini tek işlem halinde birlikte yamamaya devam eder.
 
-Kernel önce `/ethereal-init` programını başlatır. Program, çalışan kernel release değerine tam uyan KMI modülünü seçer, `finit_module()` ile yükler ve ardından stok `/init` dosyasını çalıştırır. Ethereal `/init` dosyasını değiştirmez ve ELF giriş noktasına dokunmaz.
+GKI 1.0 ve Direct Install, `/ethereal-init` programını `rdinit` üzerinden başlatır. GKI 2.0 çevrimdışı yolu stok `/init` içine eklenen yükleyiciye girer, tam eşleşen KMI modülünü `finit_module()` ile yükler ve ardından özgün ELF girişine döner. Stok dosya değiştirilmez; yama kaldırılırken `init.ethereal.bak` geri yüklenir.
 
 ## Neden tek bir evrensel KO yok?
 

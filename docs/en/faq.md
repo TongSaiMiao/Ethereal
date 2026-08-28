@@ -7,9 +7,9 @@ Ethereal is a kernel-module root solution for ARM64 GKI 1.0 and GKI 2.0. It load
 ## What does the boot-image patch change?
 
 - GKI 1.0: `ethereal-init`, the KOs, and the other boot payload are added to the `boot.img` ramdisk. `rdinit=/ethereal-init` is added to that same `boot.img` cmdline.
-- GKI 2.0: the payload is added to the `init_boot.img` ramdisk, while `rdinit=/ethereal-init` is added to the matching `boot.img` cmdline. The two images must therefore be patched as a pair.
+- GKI 2.0 offline patch: select one `init_boot.img`. The payload is added there, the original `/init` is saved as `init.ethereal.bak`, and an extra `PT_LOAD` redirects its ELF entry through the Ethereal loader. The matching `boot.img` and its cmdline are unchanged. A kernel-only GKI 2.0 `boot.img` is rejected as a standalone target. Direct Install still patches `init_boot` and `boot` together as one transaction.
 
-The kernel starts `/ethereal-init`. It selects an exact KMI module from the running kernel release, loads it with `finit_module()`, and then executes the stock `/init`. Ethereal neither replaces the stock `/init` nor changes its ELF entry point.
+GKI 1.0 and GKI 2.0 Direct Install start `/ethereal-init` through `rdinit`. The offline GKI 2.0 path enters the loader injected into the stock `/init`, loads the exact KMI module with `finit_module()`, and then jumps to the original ELF entry. The stock file is not replaced, and unpatch restores it from `init.ethereal.bak`.
 
 ## Why is there no single universal KO?
 
@@ -17,4 +17,4 @@ Kernels with the same major version can still use different Android KMIs, symbol
 
 ## How does Ethereal differ from Magisk and KernelSU?
 
-Ethereal's core path is an `rdinit` trampoline plus per-KMI LKMs. It preserves the stock kernel Image and `/init` file, unlike designs that replace the ramdisk init or compile root code directly into a kernel source tree.
+Ethereal uses an `rdinit` trampoline for GKI 1.0 and Direct Install, or a backed-up ELF-entry hook for an offline GKI 2.0 `init_boot` patch, plus per-KMI LKMs. It preserves the stock kernel Image and does not replace the stock `/init` file, unlike designs that replace ramdisk init or compile root code directly into a kernel source tree.

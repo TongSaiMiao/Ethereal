@@ -8,7 +8,7 @@
     <string name="send_log">发送日志</string>
     <string name="patch_warnning">安装过程存在风险，请确保您的数据已备份。</string>
     <string name="home_install_unknown">内核补丁未安装</string>
-    <string name="home_install_unknown_summary">不改内核 Image。GKI 2.0 会向 init_boot 放入 ethereal-init 和 ethereal.ko，并且只修改 boot 的 rdinit 启动参数。禁止把 init_boot 刷进 boot 分区。</string>
+    <string name="home_install_unknown_summary">不改内核 Image。离线修补时，GKI 1.0 只选 boot，GKI 2.0 只选 init_boot。禁止把 init_boot 刷进 boot 分区。</string>
     <string name="reboot_download">重启至 Download</string>
     <string name="home_click_to_learn_ethereal">查看 Ethereal 的特性和用法</string>
     <string name="reboot_edl">重启至 EDL</string>
@@ -27,9 +27,8 @@
     <string name="install_upload_lkm_file">使用本地 LKM 文件</string>
     <string name="install_only_support_ko_file">仅支持 .ko 文件</string>
     <string name="select_file_tip">建议选择 %1$s 分区镜像</string>
-    <string name="select_pair_tip">请选择同一套 init_boot 和 boot 镜像</string>
-    <string name="select_init_boot_image">选择 init_boot 镜像</string>
-    <string name="select_boot_image">选择 boot 镜像</string>
+    <string name="select_boot_or_init_boot_image">选择 boot 或 init_boot 镜像</string>
+    <string name="select_single_image_tip">每次选择一个 boot 或 init_boot 镜像</string>
     <string name="file_not_selected">未选择</string>
     <string name="selected_lkm">已选择 LKM：%s</string>
     <string name="horizon_kernel">安装 AnyKernel3</string>

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Offline boot/init_boot patch -> unpack audit -> QEMU rdinit trampoline test.
+# Offline single init_boot hook + direct-install pair -> unpack audit -> QEMU.
 # This never reads or writes a physical Android partition.
 set -euo pipefail
 
@@ -216,6 +216,14 @@ mkdir -p "$ROOTFS"
 "${ARM64_CC[@]}" -static -O2 -s "${ARM64_LD_FLAGS[@]}" \
   -Wl,--build-id=none \
   -o "$ROOTFS/init" "$ROOT/tests/boot-patch-e2e-init.c"
+# The synthetic pid-1 fixture models the first-stage landmark present in AOSP
+# init binaries so the production hook path is exercised end to end.
+printf '%s\0' 'init first stage started!' >> "$ROOTFS/init"
+mkdir -p "$ROOTFS/eth" "$ROOTFS/debug_ramdisk"
+printf '%s\n' stock-root-su > "$ROOTFS/su"
+printf '%s\n' stock-eth-su > "$ROOTFS/eth/su"
+printf '%s\n' stock-debug-su > "$ROOTFS/debug_ramdisk/su"
+printf '%s\n' stock-eth-keep > "$ROOTFS/eth/keep"
 (
   cd "$ROOTFS"
   find . -print0 | cpio --null -o -H newc --quiet
@@ -344,9 +352,13 @@ verify_init_boot() {
   unpack_image "$image" "$unpacked"
   ! grep -qw "rdinit=/ethereal-init" "$unpacked/cmdline.txt"
   test ! -e "$unpacked/kernel"
-  for entry in init ethereal-init ethereal.manager_uid ethereal.manager_token ethereal.ko eth/su; do
+  for entry in init ethereal-init ethereal.manager_uid ethereal.manager_token ethereal.patch_state ethereal.ko ethereal-su; do
     "$RAMTOOL" cpio "$unpacked/ramdisk.cpio" "exists $entry"
   done
+  if "$RAMTOOL" cpio "$unpacked/ramdisk.cpio" "exists init.ethereal.bak"; then
+    echo "paired init_boot unexpectedly used the offline ELF hook" >&2
+    exit 1
+  fi
   legacy_su='r''p/su'
   if "$RAMTOOL" cpio "$unpacked/ramdisk.cpio" "exists $legacy_su"; then
     echo "legacy su path unexpectedly present in patched ramdisk" >&2
@@ -361,18 +373,30 @@ verify_init_boot() {
     "extract init $unpacked/init.extracted" \
     "extract ethereal.manager_uid $unpacked/manager_uid.extracted" \
     "extract ethereal.manager_token $unpacked/manager_token.extracted" \
+    "extract ethereal.patch_state $unpacked/patch_state.extracted" \
     "extract ethereal.ko $unpacked/ethereal.ko.extracted" \
-    "extract eth/su $unpacked/su.extracted"
+    "extract ethereal-su $unpacked/su.extracted"
   cmp -s "$ROOTFS/init" "$unpacked/init.extracted"
   cmp -s "$KO" "$unpacked/ethereal.ko.extracted"
   cmp -s "$SU" "$unpacked/su.extracted"
   test "$(cat "$unpacked/manager_uid.extracted")" = "2000"
   cmp -s "$MANAGER_TOKEN_FILE" "$unpacked/manager_token.extracted"
+  grep -qx 'mode=gki2-pair' "$unpacked/patch_state.extracted"
+  verify_preserved_su_entries "$unpacked"
   cpio -itv < "$unpacked/ramdisk.cpio" 2>/dev/null | \
     awk '$NF == "ethereal.manager_uid" { print $1 }' | grep -qx -- "-r--------"
   cpio -itv < "$unpacked/ramdisk.cpio" 2>/dev/null | \
     awk '$NF == "ethereal.manager_token" { print $1 }' | grep -qx -- "-r--------"
   verify_fixed_tail "$OUT/init_boot.img" "$image"
+}
+
+verify_preserved_su_entries() {
+  local unpacked="$1" entry extracted
+  for entry in su eth/su debug_ramdisk/su eth/keep; do
+    extracted="$unpacked/preserved-${entry//\//-}"
+    "$RAMTOOL" cpio "$unpacked/ramdisk.cpio" "extract $entry $extracted"
+    cmp -s "$ROOTFS/$entry" "$extracted"
+  done
 }
 
 verify_boot() {
@@ -396,26 +420,203 @@ assert patched[-64:-60] == b"AVBf"
 PY
 }
 
-verify_init_boot "$OUT/Ethereal-init_boot.img" "$OUT/unpack-init"
-verify_boot "$OUT/Ethereal-boot.img" "$OUT/unpack-boot"
+verify_single_init_boot() {
+  local image="$1" unpacked="$2"
+  unpack_image "$image" "$unpacked"
+  ! grep -qw "rdinit=/ethereal-init" "$unpacked/cmdline.txt"
+  test ! -e "$unpacked/kernel"
+  for entry in \
+    init init.ethereal.bak ethereal-init ethereal.manager_uid \
+    ethereal.manager_token ethereal.patch_state ethereal.ko ethereal-su; do
+    "$RAMTOOL" cpio "$unpacked/ramdisk.cpio" "exists $entry"
+  done
+  "$RAMTOOL" cpio "$unpacked/ramdisk.cpio" \
+    "extract init $unpacked/init.hooked" \
+    "extract init.ethereal.bak $unpacked/init.original" \
+    "extract ethereal.manager_uid $unpacked/manager_uid.extracted" \
+    "extract ethereal.manager_token $unpacked/manager_token.extracted" \
+    "extract ethereal.patch_state $unpacked/patch_state.extracted" \
+    "extract ethereal.ko $unpacked/ethereal.ko.extracted" \
+    "extract ethereal-su $unpacked/su.extracted"
+  cmp -s "$ROOTFS/init" "$unpacked/init.original"
+  if cmp -s "$ROOTFS/init" "$unpacked/init.hooked"; then
+    echo "single init_boot left /init unhooked" >&2
+    exit 1
+  fi
+  cmp -s "$KO" "$unpacked/ethereal.ko.extracted"
+  cmp -s "$SU" "$unpacked/su.extracted"
+  test "$(cat "$unpacked/manager_uid.extracted")" = "2000"
+  cmp -s "$MANAGER_TOKEN_FILE" "$unpacked/manager_token.extracted"
+  grep -qx 'mode=gki2-single' "$unpacked/patch_state.extracted"
+  verify_preserved_su_entries "$unpacked"
+  python3 - "$unpacked/init.original" "$unpacked/init.hooked" <<'PY'
+import struct
+import sys
+from pathlib import Path
 
-mkdir -p "$OUT/work-single-init-reject"
-cp -f "$RAMTOOL" "$OUT/work-single-init-reject/ramtool"
-if (
-  cd "$OUT/work-single-init-reject"
-  "$ETHD" boot-patch \
-    --image "$OUT/init_boot.img" \
-    --out "$OUT/single-init-should-not-exist.img" \
+original = Path(sys.argv[1]).read_bytes()
+hooked = Path(sys.argv[2]).read_bytes()
+
+def elf64_layout(data):
+    assert data[:4] == b"\x7fELF" and data[4] == 2 and data[5] == 1
+    entry = struct.unpack_from("<Q", data, 24)[0]
+    phoff = struct.unpack_from("<Q", data, 32)[0]
+    phentsize = struct.unpack_from("<H", data, 54)[0]
+    phnum = struct.unpack_from("<H", data, 56)[0]
+    loads = sum(
+        struct.unpack_from("<I", data, phoff + index * phentsize)[0] == 1
+        for index in range(phnum)
+    )
+    return entry, loads
+
+original_entry, original_loads = elf64_layout(original)
+hooked_entry, hooked_loads = elf64_layout(hooked)
+assert hooked_entry != original_entry
+assert hooked_loads == original_loads + 1
+assert b"ETHRL01\0" in hooked
+assert b"ETHRL01\0" not in original
+PY
+  cpio -itv < "$unpacked/ramdisk.cpio" 2>/dev/null | \
+    awk '$NF == "ethereal.manager_uid" { print $1 }' | grep -qx -- "-r--------"
+  cpio -itv < "$unpacked/ramdisk.cpio" 2>/dev/null | \
+    awk '$NF == "ethereal.manager_token" { print $1 }' | grep -qx -- "-r--------"
+  verify_fixed_tail "$OUT/init_boot.img" "$image"
+}
+
+# v0.1.1 left no ownership receipt behind. Rebuild its exact luggage here so
+# migration has to identify the old layout from real CPIO entries, not a mock.
+LEGACY_BUILD="$OUT/work-legacy-v011-build"
+mkdir -p "$LEGACY_BUILD"
+cp -f "$RAMTOOL" "$LEGACY_BUILD/ramtool"
+printf '%s\n' 2000 > "$LEGACY_BUILD/manager_uid"
+(
+  cd "$LEGACY_BUILD"
+  ./ramtool unpack "$OUT/init_boot.img"
+  ./ramtool cpio ramdisk.cpio \
+    "add 0755 ethereal-init $ETHINIT" \
+    "add 0400 ethereal.manager_uid $LEGACY_BUILD/manager_uid" \
+    "add 0400 ethereal.manager_token $MANAGER_TOKEN_FILE" \
+    "add 0755 ethereal.ko $KO"
+  ./ramtool repack "$OUT/init_boot.img" "$OUT/legacy-v011-init_boot.img"
+)
+for absent in ethereal.patch_state ethereal-su init.ethereal.bak; do
+  if "$RAMTOOL" cpio "$LEGACY_BUILD/ramdisk.cpio" "exists $absent"; then
+    echo "legacy v0.1.1 fixture unexpectedly contains $absent" >&2
+    exit 1
+  fi
+done
+# Shared paths are somebody else's drawer. A migration may replace Ethereal's
+# own payload, but it does not get to tidy /su or the stock eth directories.
+verify_preserved_su_entries "$LEGACY_BUILD"
+
+LEGACY_PATCH="$OUT/work-legacy-v011-patch"
+mkdir -p "$LEGACY_PATCH"
+cp -f "$RAMTOOL" "$LEGACY_PATCH/ramtool"
+cp -f "$SU" "$LEGACY_PATCH/su"
+chmod 755 "$LEGACY_PATCH/ramtool" "$LEGACY_PATCH/su"
+(
+  cd "$LEGACY_PATCH"
+  "$ETHD" boot-patch-pair \
+    --init-boot "$OUT/legacy-v011-init_boot.img" \
+    --boot "$OUT/boot.img" \
+    --out-init-boot "$OUT/Ethereal-legacy-v011-init_boot.img" \
+    --out-boot "$OUT/Ethereal-legacy-v011-boot.img" \
     --manager-uid 2000 \
     --manager-token-file "$MANAGER_TOKEN_FILE" \
     --ethinit "$ETHINIT" \
     --ko "$KO"
-) >"$OUT/single-init-reject.log" 2>&1; then
-  echo "single-image init_boot patch was incorrectly accepted" >&2
+) >"$OUT/legacy-v011-migrate.log" 2>&1
+grep -q "migrating complete v0.1.1 ramdisk layout" \
+  "$OUT/legacy-v011-migrate.log"
+verify_init_boot \
+  "$OUT/Ethereal-legacy-v011-init_boot.img" "$OUT/unpack-legacy-v011"
+verify_boot \
+  "$OUT/Ethereal-legacy-v011-boot.img" "$OUT/unpack-legacy-v011-boot"
+grep -qx 'format=2' "$OUT/unpack-legacy-v011/patch_state.extracted"
+
+# A couple of familiar filenames are not ownership. This half-patched fixture
+# must be rejected before either member of the pair becomes visible.
+INCOMPLETE_BUILD="$OUT/work-legacy-incomplete-build"
+mkdir -p "$INCOMPLETE_BUILD"
+cp -f "$RAMTOOL" "$INCOMPLETE_BUILD/ramtool"
+(
+  cd "$INCOMPLETE_BUILD"
+  ./ramtool unpack "$OUT/init_boot.img"
+  ./ramtool cpio ramdisk.cpio \
+    "add 0755 ethereal-init $ETHINIT" \
+    "add 0755 ethereal.ko $KO"
+  ./ramtool repack "$OUT/init_boot.img" "$OUT/legacy-incomplete-init_boot.img"
+)
+INCOMPLETE_PATCH="$OUT/work-legacy-incomplete-patch"
+mkdir -p "$INCOMPLETE_PATCH"
+cp -f "$RAMTOOL" "$INCOMPLETE_PATCH/ramtool"
+cp -f "$SU" "$INCOMPLETE_PATCH/su"
+if (
+  cd "$INCOMPLETE_PATCH"
+  "$ETHD" boot-patch-pair \
+    --init-boot "$OUT/legacy-incomplete-init_boot.img" \
+    --boot "$OUT/boot.img" \
+    --out-init-boot "$OUT/legacy-incomplete-init-should-not-exist.img" \
+    --out-boot "$OUT/legacy-incomplete-boot-should-not-exist.img" \
+    --manager-uid 2000 \
+    --manager-token-file "$MANAGER_TOKEN_FILE" \
+    --ethinit "$ETHINIT" \
+    --ko "$KO"
+) >"$OUT/legacy-incomplete-reject.log" 2>&1; then
+  echo "incomplete v0.1.1 layout was incorrectly claimed by Ethereal" >&2
   exit 1
 fi
-grep -q "use boot-patch-pair for GKI 2.0" "$OUT/single-init-reject.log"
-test ! -e "$OUT/single-init-should-not-exist.img"
+grep -q "already contains ethereal-init without an Ethereal ownership state" \
+  "$OUT/legacy-incomplete-reject.log"
+test ! -e "$OUT/legacy-incomplete-init-should-not-exist.img"
+test ! -e "$OUT/legacy-incomplete-boot-should-not-exist.img"
+
+verify_init_boot "$OUT/Ethereal-init_boot.img" "$OUT/unpack-init"
+verify_boot "$OUT/Ethereal-boot.img" "$OUT/unpack-boot"
+
+cp -f "$OUT/boot.img" "$OUT/boot-before-single-init.img"
+mkdir -p "$OUT/work-single-init"
+cp -f "$RAMTOOL" "$OUT/work-single-init/ramtool"
+cp -f "$SU" "$OUT/work-single-init/su"
+chmod 755 "$OUT/work-single-init/ramtool" "$OUT/work-single-init/su"
+(
+  cd "$OUT/work-single-init"
+  "$ETHD" boot-patch \
+    --image "$OUT/init_boot.img" \
+    --out "$OUT/Ethereal-single-init_boot.img" \
+    --manager-uid 2000 \
+    --manager-token-file "$MANAGER_TOKEN_FILE" \
+    --ethinit "$ETHINIT" \
+    --ko "$KO"
+) >"$OUT/single-init.log" 2>&1
+grep -q "GKI 2.0 single init_boot; root /init entry hook" "$OUT/single-init.log"
+grep -q "HOOKED_INITS    \[1\]" "$OUT/single-init.log"
+cmp -s "$OUT/boot-before-single-init.img" "$OUT/boot.img" || {
+  echo "single init_boot patch changed the stock boot image" >&2
+  exit 1
+}
+verify_single_init_boot \
+  "$OUT/Ethereal-single-init_boot.img" "$OUT/unpack-single-init"
+
+mkdir -p "$OUT/work-single-boot-reject"
+cp -f "$RAMTOOL" "$OUT/work-single-boot-reject/ramtool"
+if (
+  cd "$OUT/work-single-boot-reject"
+  "$ETHD" boot-patch \
+    --image "$OUT/boot.img" \
+    --out "$OUT/single-boot-should-not-exist.img" \
+    --manager-uid 2000 \
+    --manager-token-file "$MANAGER_TOKEN_FILE" \
+    --ethinit "$ETHINIT" \
+    --ko "$KO"
+) >"$OUT/single-boot-reject.log" 2>&1; then
+  echo "single-image GKI 2.0 kernel-only boot was incorrectly accepted" >&2
+  exit 1
+fi
+grep -q "selected boot image is kernel-only; patch its matching init_boot image instead" \
+  "$OUT/single-boot-reject.log"
+test ! -e "$OUT/single-boot-should-not-exist.img"
+cmp -s "$OUT/boot-before-single-init.img" "$OUT/boot.img"
 
 for missing in init_boot boot; do
   work="$OUT/work-missing-$missing"
@@ -482,6 +683,63 @@ grep -q "conflicting rdinit=/init" "$OUT/conflict-reject.log"
 test ! -e "$OUT/conflict-init-should-not-exist.img"
 test ! -e "$OUT/conflict-boot-should-not-exist.img"
 
+python3 - "$OUT/init_boot.img" "$OUT/foreign-rdinit-init_boot.img" <<'PY'
+import sys
+from pathlib import Path
+
+image = bytearray(Path(sys.argv[1]).read_bytes())
+image[0x2C:0x2C + 1536] = bytes(1536)
+conflict = b"rdinit=/foreign-init"
+image[0x2C:0x2C + len(conflict)] = conflict
+Path(sys.argv[2]).write_bytes(image)
+PY
+mkdir -p "$OUT/work-foreign-rdinit"
+cp -f "$RAMTOOL" "$OUT/work-foreign-rdinit/ramtool"
+cp -f "$SU" "$OUT/work-foreign-rdinit/su"
+if (
+  cd "$OUT/work-foreign-rdinit"
+  "$ETHD" boot-patch \
+    --image "$OUT/foreign-rdinit-init_boot.img" \
+    --out "$OUT/foreign-rdinit-should-not-exist.img" \
+    --manager-uid 2000 \
+    --manager-token-file "$MANAGER_TOKEN_FILE" \
+    --ethinit "$ETHINIT" \
+    --ko "$KO"
+) >"$OUT/foreign-rdinit-reject.log" 2>&1; then
+  echo "single init_boot patch accepted a foreign rdinit" >&2
+  exit 1
+fi
+grep -q "already defines rdinit=/foreign-init" "$OUT/foreign-rdinit-reject.log"
+test ! -e "$OUT/foreign-rdinit-should-not-exist.img"
+
+mkdir -p "$OUT/work-reserved-collision"
+cp -f "$RAMTOOL" "$OUT/work-reserved-collision/ramtool"
+cp -f "$SU" "$OUT/work-reserved-collision/su"
+printf '%s\n' foreign > "$OUT/work-reserved-collision/collision"
+(
+  cd "$OUT/work-reserved-collision"
+  ./ramtool unpack "$OUT/init_boot.img"
+  ./ramtool cpio ramdisk.cpio \
+    "add 0400 ethereal.manager_uid collision"
+  ./ramtool repack "$OUT/init_boot.img" "$OUT/reserved-collision-init_boot.img"
+)
+if (
+  cd "$OUT/work-reserved-collision"
+  "$ETHD" boot-patch \
+    --image "$OUT/reserved-collision-init_boot.img" \
+    --out "$OUT/reserved-collision-should-not-exist.img" \
+    --manager-uid 2000 \
+    --manager-token-file "$MANAGER_TOKEN_FILE" \
+    --ethinit "$ETHINIT" \
+    --ko "$KO"
+) >"$OUT/reserved-collision-reject.log" 2>&1; then
+  echo "patch overwrote a foreign Ethereal-reserved path" >&2
+  exit 1
+fi
+grep -q "already contains ethereal.manager_uid without an Ethereal ownership state" \
+  "$OUT/reserved-collision-reject.log"
+test ! -e "$OUT/reserved-collision-should-not-exist.img"
+
 head -c 31 "$MANAGER_TOKEN_FILE" > "$OUT/invalid-token.bin"
 mkdir -p "$OUT/work-invalid-token"
 cp -f "$RAMTOOL" "$OUT/work-invalid-token/ramtool"
@@ -505,49 +763,109 @@ grep -q "manager token file must contain exactly 32 bytes" "$OUT/invalid-token-r
 test ! -e "$OUT/invalid-token-init-should-not-exist.img"
 test ! -e "$OUT/invalid-token-boot-should-not-exist.img"
 
-mkdir -p "$OUT/work-unpatch" "$OUT/unpack-restored"
-cp -f "$RAMTOOL" "$OUT/work-unpatch/ramtool"
-(
-  cd "$OUT/work-unpatch"
+mkdir -p "$OUT/work-stock-unpatch"
+cp -f "$RAMTOOL" "$OUT/work-stock-unpatch/ramtool"
+if (
+  cd "$OUT/work-stock-unpatch"
   "$ETHD" boot-unpatch \
-    --image "$OUT/Ethereal-boot.img" \
-    --out "$OUT/restored-boot.img"
-)
+    --image "$OUT/init_boot.img" \
+    --out "$OUT/stock-unpatch-should-not-exist.img"
+) >"$OUT/stock-unpatch-reject.log" 2>&1; then
+  echo "unpatch accepted an image without Ethereal ownership state" >&2
+  exit 1
+fi
+grep -q "no supported Ethereal ownership state" "$OUT/stock-unpatch-reject.log"
+test ! -e "$OUT/stock-unpatch-should-not-exist.img"
+
+mkdir -p "$OUT/work-single-unpatch" "$OUT/unpack-single-restored"
+cp -f "$RAMTOOL" "$OUT/work-single-unpatch/ramtool"
 (
-  cd "$OUT/unpack-restored"
-  "$RAMTOOL" unpack "$OUT/restored-boot.img"
+  cd "$OUT/work-single-unpatch"
+  "$ETHD" boot-unpatch \
+    --image "$OUT/Ethereal-single-init_boot.img" \
+    --out "$OUT/restored-single-init_boot.img"
 )
-! grep -qw "rdinit=/ethereal-init" "$OUT/unpack-restored/cmdline.txt"
-for removed in ethereal-init ethereal.manager_uid ethereal.manager_token ethereal.ko; do
-  if "$RAMTOOL" cpio "$OUT/unpack-restored/ramdisk.cpio" "exists $removed"; then
-    echo "unpatch left $removed in ramdisk" >&2
+unpack_image "$OUT/restored-single-init_boot.img" "$OUT/unpack-single-restored"
+! grep -qw "rdinit=/ethereal-init" "$OUT/unpack-single-restored/cmdline.txt"
+test ! -e "$OUT/unpack-single-restored/kernel"
+"$RAMTOOL" cpio "$OUT/unpack-single-restored/ramdisk.cpio" \
+  "extract init $OUT/unpack-single-restored/init.extracted"
+cmp -s "$ROOTFS/init" "$OUT/unpack-single-restored/init.extracted"
+verify_preserved_su_entries "$OUT/unpack-single-restored"
+for removed in \
+  init.ethereal.bak ethereal-init ethereal.manager_uid ethereal.manager_token \
+  ethereal.patch_state ethereal.ko ethereal-su; do
+  if "$RAMTOOL" cpio "$OUT/unpack-single-restored/ramdisk.cpio" "exists $removed"; then
+    echo "single init_boot unpatch left $removed in ramdisk" >&2
     exit 1
   fi
 done
+for bundled_kmi in \
+  android12-5.4 android12-5.10 android13-5.10 android13-5.15 \
+  android14-5.15 android14-6.1 android15-6.6 android16-6.12; do
+  if "$RAMTOOL" cpio "$OUT/unpack-single-restored/ramdisk.cpio" \
+      "exists ethereal.$bundled_kmi.ko"; then
+    echo "single init_boot unpatch left ethereal.$bundled_kmi.ko" >&2
+    exit 1
+  fi
+done
+verify_fixed_tail "$OUT/init_boot.img" "$OUT/restored-single-init_boot.img"
 
-CMDLINE="$(tr '\000\r\n' '   ' < "$OUT/unpack-boot/cmdline.txt")"
-SERIAL="$OUT/serial.log"
-set +e
-timeout --signal=KILL 180s "$QEMU" \
-  -machine virt,gic-version=3 \
-  -cpu max,pauth-impdef=on \
-  -m 1536 \
-  -smp 2 \
-  -no-reboot \
-  -kernel "$KERNEL" \
-  -initrd "$OUT/unpack-init/ramdisk.cpio" \
-  -append "console=ttyAMA0 earlycon=pl011,0x9000000 $CMDLINE ignore_loglevel panic=1 nokaslr" \
-  -serial "file:$SERIAL" \
-  -monitor none \
-  -display none
-QEMU_RC=$?
-set -e
+mkdir -p "$OUT/work-pair-unpatch" "$OUT/unpack-pair-restored-boot"
+cp -f "$RAMTOOL" "$OUT/work-pair-unpatch/ramtool"
+(
+  cd "$OUT/work-pair-unpatch"
+  "$ETHD" boot-unpatch \
+    --image "$OUT/Ethereal-boot.img" \
+    --out "$OUT/restored-pair-boot.img"
+)
+unpack_image "$OUT/restored-pair-boot.img" "$OUT/unpack-pair-restored-boot"
+! grep -qw "rdinit=/ethereal-init" "$OUT/unpack-pair-restored-boot/cmdline.txt"
+test ! -e "$OUT/unpack-pair-restored-boot/ramdisk.cpio"
+verify_fixed_tail "$OUT/boot.img" "$OUT/restored-pair-boot.img"
 
-if ! grep -q "ETHEREAL_BOOT_PATCH_E2E_RESULT=PASS" "$SERIAL"; then
-  echo "QEMU patched-ramdisk test failed (qemu rc=$QEMU_RC)" >&2
-  grep -E "ethereal-stub:|ethereal-boot-e2e:|ETHEREAL_BOOT_PATCH_E2E_RESULT=|Kernel panic" "$SERIAL" | tail -80 >&2 || true
-  exit 1
-fi
+unpack_image "$OUT/boot.img" "$OUT/unpack-stock-boot"
+PAIR_CMDLINE="$(tr '\000\r\n' '   ' < "$OUT/unpack-boot/cmdline.txt")"
+SINGLE_CMDLINE="$(tr '\000\r\n' '   ' < "$OUT/unpack-stock-boot/cmdline.txt")"
+grep -qw "rdinit=/ethereal-init" "$OUT/unpack-boot/cmdline.txt"
+! grep -qw "rdinit=/ethereal-init" "$OUT/unpack-stock-boot/cmdline.txt"
 
-grep -E "ethereal-stub:|ethereal-boot-e2e:|ETHEREAL_BOOT_PATCH_E2E_RESULT=" "$SERIAL"
-echo "PASS: paired GKI 2.0 boot/init_boot patch, transactional rejection, unpack audit, QEMU rdinit handoff"
+run_qemu_handoff() {
+  local label="$1" initrd="$2" cmdline="$3" serial="$4" qemu_rc
+  set +e
+  timeout --signal=KILL 180s "$QEMU" \
+    -machine virt,gic-version=3 \
+    -cpu max,pauth-impdef=on \
+    -m 1536 \
+    -smp 2 \
+    -no-reboot \
+    -kernel "$KERNEL" \
+    -initrd "$initrd" \
+    -append "console=ttyAMA0 earlycon=pl011,0x9000000 $cmdline ignore_loglevel panic=1 nokaslr" \
+    -serial "file:$serial" \
+    -monitor none \
+    -display none
+  qemu_rc=$?
+  set -e
+
+  if ! grep -q "ETHEREAL_BOOT_PATCH_E2E_RESULT=PASS" "$serial"; then
+    echo "QEMU $label handoff failed (qemu rc=$qemu_rc)" >&2
+    grep -E "ethereal-stub:|ethereal-boot-e2e:|ETHEREAL_BOOT_PATCH_E2E_RESULT=|Kernel panic" \
+      "$serial" | tail -80 >&2 || true
+    exit 1
+  fi
+  echo "QEMU $label handoff PASS (qemu rc=$qemu_rc)"
+  grep -E "ethereal-stub:|ethereal-boot-e2e:|ETHEREAL_BOOT_PATCH_E2E_RESULT=" "$serial"
+}
+
+run_qemu_handoff \
+  "paired rdinit" "$OUT/unpack-init/ramdisk.cpio" "$PAIR_CMDLINE" "$OUT/serial.log"
+grep -Fq ' from /ethereal-su' "$OUT/serial.log"
+run_qemu_handoff \
+  "single init_boot ELF hook" "$OUT/unpack-single-init/ramdisk.cpio" \
+  "$SINGLE_CMDLINE" "$OUT/serial-single-init.log"
+grep -Fq ' from /ethereal-su' "$OUT/serial-single-init.log"
+grep -q "ethereal-stub: hooked FirstStageMain" "$OUT/serial-single-init.log"
+grep -q "ethereal-boot-e2e: OEM init handoff OK" "$OUT/serial-single-init.log"
+
+echo "PASS: single GKI 2.0 init_boot hook, kernel-only boot rejection, Direct pair transaction, unpatch restore, and both QEMU handoffs"

@@ -43,8 +43,10 @@ bash tests/run-boot-patch-e2e.sh
 ```
 
 The first patch E2E command exercises an offline, unprivileged GKI 1.0
-single-`boot.img` patch and QEMU handoff. The second exercises the GKI 2.0
-paired `boot.img`/`init_boot.img` transaction and QEMU handoff.
+single-`boot.img` patch and QEMU handoff. The second exercises both GKI 2.0
+paths: an offline single-`init_boot.img` ELF-entry hook with the stock
+`boot.img` cmdline unchanged, and the paired `init_boot`/`boot` transaction
+used by Direct Install. Both GKI 2.0 handoff paths are booted in QEMU.
 
 The official Images are cached under `/root/gki-official/<kmi>/`. Serial logs
 are written to `qemu/out/<kmi>/serial.log`; `qemu/out/matrix.log` contains the
